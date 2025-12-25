@@ -13,15 +13,22 @@ EXCLUDE_FILE = "exclude_list.txt"
 
 # --- Helper Functions ---
 def load_text_file(filepath, default_text):
-    if os.path.exists(filepath):
-        with open(filepath, "r") as f:
-            return f.read()
+    try:
+        if os.path.exists(filepath):
+            with open(filepath, "r") as f:
+                content = f.read()
+                return content if content.strip() else default_text
+    except Exception:
+        pass
     return default_text
 
 def save_text_file(filepath, text, success_msg):
-    with open(filepath, "w") as f:
-        f.write(text)
-    st.sidebar.success(success_msg)
+    try:
+        with open(filepath, "w") as f:
+            f.write(text)
+        st.sidebar.success(success_msg)
+    except Exception as e:
+        st.sidebar.error("Note: Changes saved for this session, but permanent cloud saving requires a database.")
 
 def parse_time(time_str):
     if not time_str: return None
@@ -243,4 +250,5 @@ if uploaded_file:
             file_name=f"OPD_Roster_{datetime.now().strftime('%Y-%m-%d')}.csv", 
             mime="text/csv", 
             use_container_width=True
+
         )
