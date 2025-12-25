@@ -7,7 +7,7 @@ import io
 from datetime import datetime, timedelta
 
 # --- Page Configuration ---
-st.set_page_config(page_title="OPD Hourly", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="OPD Hourly", layout="wide")
 
 # --- Cloud-Friendly Logic (Secrets) ---
 def load_data(key, default_text):
@@ -61,7 +61,6 @@ def calculate_staggered_lunches(df):
             if found: taken_slots.append(curr)
             final_records.append(row.to_dict())
     
-    # Keep Excluded
     ex_group = df[df['Role'] == "Exclude"].to_dict('records')
     for item in ex_group:
         item['Lunch Time'] = "N/A"
@@ -85,7 +84,7 @@ def process_pdf(file, roster_text, exclude_text):
                     if any(ex in line.lower() for ex in e_names): continue
                     match_name = None
                     for name_key in v_names:
-                        if name_key in line.lower():
+                        if name_key in clean_name_search(line.lower()):
                             parts = name_key.title().split()
                             match_name = f"{parts[0]} {parts[1][0]}." if len(parts) > 1 else parts[0]
                             break
@@ -99,34 +98,57 @@ def process_pdf(file, roster_text, exclude_text):
                         if len(pot) > 3: mismatches.append(pot)
     return pd.DataFrame(data), list(set(mismatches))
 
+def clean_name_search(text):
+    return text.replace(',', '').replace('.', '')
+
 # --- Main UI ---
 st.title("📅 OPD Hourly Pickers/Dispensers")
 
-# Sidebar for Setup
 with st.sidebar:
     st.header("⚙️ Settings")
     r_input = st.text_area("Roster (Whitelist)", value=load_data("roster_data", "Name 1"), height=200)
     e_input = st.text_area("Auto-Exclude (Blacklist)", value=load_data("exclude_data", "Manager"), height=150)
-    st.info("To save permanently, update your Streamlit Secrets dashboard.")
+    st.info("Permanent saves require updating Streamlit Secrets.")
 
 uploaded_file = st.file_uploader("Upload Roster PDF", type="pdf")
 
 if uploaded_file:
-    if 'main_df' not in st.session_state:
+    if 'main_df' not in st.session_state or st.sidebar.button("🔄 Reload PDF"):
         df, miss = process_pdf(uploaded_file, r_input, e_input)
         st.session_state.main_df, st.session_state.mismatches, st.session_state.calc = df, miss, False
 
-    if st.session_state.mismatches:
-        with st.expander("⚠️ Mismatched Names"):
-            st.code("\n".join(st.session_state.mismatches))
+    df = st.session_state.main_df
 
-    # Controls
-    if st.button("🔥 GENERATE TABLES", type="primary", use_container_width=True):
-        st.session_state.main_df = calculate_staggered_lunches(st.session_state.main_df)
-        st.session_state.calc = True
+    # 1. Metrics (RESTORED)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("🛒 Pickers", len(df[df['Role'] == 'Pickers']))
+    m2.metric("📦 Backroom", len(df[df['Role'] == 'Backroom']))
+    m3.metric("⚠️ Exceptions", len(df[df['Role'] == 'Exceptions']))
+    m4.metric("❌ Excluded", len(df[df['Role'] == 'Exclude']))
 
-    # Editor
+    st.divider()
+
+    # 2. Bulk Assignment (RESTORED)
+    col_a, col_b = st.columns([2, 1])
+    with col_a:
+        st.subheader("Bulk Role Assignment")
+        s1, s2, s3 = st.columns([2, 1, 1])
+        selected = s1.multiselect("Select Associates:", options=sorted(df['Associate'].tolist()))
+        target = s2.selectbox("Set Role:", ["Pickers", "Backroom", "Exceptions", "Exclude"])
+        if s3.button("🚀 Apply"):
+            st.session_state.main_df.loc[st.session_state.main_df['Associate'].isin(selected), 'Role'] = target
+            st.rerun()
+    with col_b:
+        st.subheader("Finalize")
+        if st.button("🔥 GENERATE TABLES", type="primary", use_container_width=True):
+            st.session_state.main_df = calculate_staggered_lunches(st.session_state.main_df)
+            st.session_state.calc = True
+            st.rerun()
+
+    # 3. Master Editor
+    st.subheader("Master Daily Roster")
     full_times = ["N/A", "No Slot Avail", "Pending..."] + [(datetime(2025,1,1,0,0)+timedelta(minutes=30*i)).strftime("%I:%M %p") for i in range(48)]
+    
     edited_df = st.data_editor(st.session_state.main_df.style.applymap(highlight_no_slots, subset=['Lunch Time']), column_config={
         "Associate": st.column_config.TextColumn(disabled=True),
         "Role": st.column_config.SelectboxColumn(options=["Pickers", "Backroom", "Exceptions", "Exclude"]),
@@ -134,14 +156,17 @@ if uploaded_file:
         "Lunch Time": st.column_config.SelectboxColumn(options=full_times),
         "StartDt": None, "EndDt": None, "Duration": None
     }, use_container_width=True, hide_index=True)
-    st.session_state.main_df = edited_df
+    
+    if not edited_df.equals(st.session_state.main_df):
+        st.session_state.main_df = edited_df
+        st.rerun()
 
+    # 4. Hourly Counts
     if st.session_state.calc:
         st.divider()
-        h_tabs = st.tabs(["🛒 Pickers", "📦 Backroom", "⚠️ Exceptions"])
+        h_tabs = st.tabs(["🛒 Pickers Count", "📦 Backroom Count", "⚠️ Exceptions Count"])
         for i, role in enumerate(["Pickers", "Backroom", "Exceptions"]):
             with h_tabs[i]:
-                # Simplified Hourly Logic for Mobile
                 h_rows = []
                 for h in range(4, 23):
                     lbl = f"{h if h<=12 else h-12} {'AM' if h<12 else 'PM'}"; lbl = "12 PM" if h==12 else lbl
@@ -156,5 +181,12 @@ if uploaded_file:
                             if not on_l:
                                 act = "Pickers" if (h==4 and r['Role']=="Backroom") else r['Role']
                                 if act == role: count += 1
-                    h_rows.append({"Hour": lbl, "Count": count})
-                st.table(pd.DataFrame(h_rows)) # st.table is more stable on mobile than st.dataframe
+                    row_data = {"Hour": lbl, "Count": count}
+                    if role == "Pickers": row_data["Able to Pick"] = count * 75
+                    if role == "Backroom": row_data["Able to Dispense"] = count * 5
+                    h_rows.append(row_data)
+                st.table(pd.DataFrame(h_rows))
+
+        # 5. CSV Download (RESTORED)
+        csv = st.session_state.main_df[["Associate", "Role", "Shift", "Lunch Time"]].to_csv(index=False).encode('utf-8')
+        st.sidebar.download_button("📥 DOWNLOAD CSV", csv, f"OPD_{datetime.now().strftime('%Y-%m-%d')}.csv", "text/csv", use_container_width=True)
