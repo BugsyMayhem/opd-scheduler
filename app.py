@@ -3,38 +3,47 @@ import pdfplumber
 import pandas as pd
 import re
 import os
+import io
 from datetime import datetime, timedelta
+from streamlit_gsheets import GSheetsConnection
 
 # --- Page Configuration ---
 st.set_page_config(page_title="OPD Hourly Pickers/Dispensers", layout="wide")
 
-ROSTER_FILE = "roster.txt"
-EXCLUDE_FILE = "exclude_list.txt"
+# --- Google Sheets Connection Setup ---
+# This looks for the [connections.gsheets] info you put in your Streamlit Secrets
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- Helper Functions ---
-# --- Updated Cloud-Permanent Logic using Streamlit Secrets ---
-def load_text_file(filepath, default_text):
-    # Check if we have saved data in Streamlit Secrets first
-    secret_key = "roster_data" if "roster" in filepath else "exclude_data"
-    if secret_key in st.secrets:
-        return st.secrets[secret_key]
-    
-    # Fallback to the file in GitHub if no secret exists yet
+def load_lists_from_sheets():
+    """Reads names from the 'Roster' and 'Exclude' tabs of your Google Sheet."""
     try:
-        if os.path.exists(filepath):
-            with open(filepath, "r") as f:
-                return f.read()
-    except Exception:
-        pass
-    return default_text
+        # worksheet name must match exactly in Google Sheets
+        roster_df = conn.read(worksheet="Roster", ttl=0) 
+        exclude_df = conn.read(worksheet="Exclude", ttl=0)
+        
+        # Convert the first column of each sheet into a clean list of names
+        roster_names = "\n".join(roster_df.iloc[:, 0].dropna().astype(str).tolist())
+        exclude_names = "\n".join(exclude_df.iloc[:, 0].dropna().astype(str).tolist())
+        return roster_names, exclude_names
+    except Exception as e:
+        st.error(f"Error connecting to Google Sheets: {e}")
+        return "Add Names Here", "Manager Name"
 
-def save_text_file(filepath, text, success_msg):
-    # This reminds you to update the Secrets dashboard
-    st.sidebar.warning("⚠️ To save permanently, copy the text below into your Streamlit Secrets Dashboard.")
-    st.sidebar.code(text)
-    # Still save to session state so it works immediately
-    st.sidebar.success("Updated for this session!")
+def save_lists_to_sheets(roster_text, exclude_text):
+    """Overwrites the Google Sheet tabs with your updated lists."""
+    try:
+        # Create DataFrames from the text areas
+        r_df = pd.DataFrame([n.strip() for n in roster_text.split('\n') if n.strip()], columns=["Names"])
+        e_df = pd.DataFrame([n.strip() for n in exclude_text.split('\n') if n.strip()], columns=["Names"])
+        
+        # Push to Google Sheets
+        conn.update(worksheet="Roster", data=r_df)
+        conn.update(worksheet="Exclude", data=e_df)
+        st.sidebar.success("✅ Database Updated Permanently!")
+    except Exception as e:
+        st.sidebar.error(f"Failed to save: {e}")
 
+# --- Logic Functions ---
 def parse_time(time_str):
     if not time_str: return None
     time_str = time_str.strip().lower().replace(" ", "")
@@ -44,7 +53,6 @@ def parse_time(time_str):
     return None
 
 def highlight_no_slots(val):
-    """Styles cells containing 'No Slot Avail' with bold red text."""
     color = 'red' if val == "No Slot Avail" else None
     return f'color: {color}; font-weight: bold' if color else ''
 
@@ -129,20 +137,19 @@ def process_pdf(file, associate_input, exclude_input):
                         if len(potential) > 3: mismatched_names.append(potential)
     return pd.DataFrame(data), list(set(mismatched_names))
 
-# --- Sidebar ---
-st.sidebar.header("⚙️ Roster Settings")
-assoc_val = load_text_file(ROSTER_FILE, "Associate Name 1")
-assoc_input = st.sidebar.text_area("Associate Names (Whitelist):", value=assoc_val, height=250)
-if st.sidebar.button("💾 Save Roster"): save_text_file(ROSTER_FILE, assoc_input, "Roster saved!")
+# --- Sidebar Management ---
+st.sidebar.header("☁️ Database Management")
 
-st.sidebar.divider()
+# Initialize and Load Lists from Google Sheets
+current_r, current_e = load_lists_from_sheets()
 
-excl_val = load_text_file(EXCLUDE_FILE, "Manager Name")
-excl_input = st.sidebar.text_area("Auto-Exclude List (Blacklist):", value=excl_val, height=200)
-if st.sidebar.button("💾 Save Exclusions"): save_text_file(EXCLUDE_FILE, excl_input, "Exclusion list saved!")
+assoc_input = st.sidebar.text_area("Associate Names (Whitelist):", value=current_r, height=250)
+excl_input = st.sidebar.text_area("Auto-Exclude List (Blacklist):", value=current_e, height=200)
+
+if st.sidebar.button("💾 SAVE PERMANENTLY TO SHEETS"):
+    save_lists_to_sheets(assoc_input, excl_input)
 
 # --- Main UI ---
-st.title("📅 OPD Hourly Pickers/Dispensers")
 uploaded_file = st.file_uploader("Upload Roster PDF", type="pdf")
 
 if uploaded_file:
