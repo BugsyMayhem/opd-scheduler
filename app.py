@@ -54,25 +54,41 @@ def parse_time(time_str):
         except ValueError: continue
     return None
 
-# --- NEW STYLING LOGIC ---
-def style_roster(row):
-    """Applies background colors to names based on roles and alerts for lunch."""
-    styles = [''] * len(row)
-    role = row['Role']
-    
-    # Color Associate Name (Index 0)
-    if role == "Pickers":
-        styles[0] = 'background-color: pink; color: black; font-weight: bold'
-    elif role == "Backroom":
-        styles[0] = 'background-color: lightblue; color: black; font-weight: bold'
-    elif role == "Exceptions":
-        styles[0] = 'background-color: yellow; color: black; font-weight: bold'
-        
-    # Color Lunch Time alert (Index 3)
-    if row['Lunch Time'] == "No Slot Avail":
-        styles[3] = 'color: red; font-weight: bold'
-        
-    return styles
+# --- Updated Styling Logic ---
+def style_roster(df):
+    """Creates a styled dataframe with background colors."""
+    def apply_styles(row):
+        styles = [''] * len(row)
+        role = row['Role']
+        if role == "Pickers":
+            styles[0] = 'background-color: #FFC0CB; color: black;' # Pink
+        elif role == "Backroom":
+            styles[0] = 'background-color: #ADD8E6; color: black;' # Light Blue
+        elif role == "Exceptions":
+            styles[0] = 'background-color: #FFFFE0; color: black;' # Light Yellow
+            
+        if row['Lunch Time'] == "No Slot Avail":
+            styles[3] = 'background-color: #FF0000; color: white; font-weight: bold;'
+        return styles
+    return df.style.apply(apply_styles, axis=1)
+
+def clean_name_icons(name):
+    """Removes existing role icons before adding new ones."""
+    return name.replace("💖 ", "").replace("💙 ", "").replace("💛 ", "")
+
+def add_role_icons(df):
+    """Adds color square emojis to names based on roles."""
+    for idx, row in df.iterrows():
+        clean_name = clean_name_icons(row['Associate'])
+        if row['Role'] == "Pickers":
+            df.at[idx, 'Associate'] = f"💖 {clean_name}"
+        elif row['Role'] == "Backroom":
+            df.at[idx, 'Associate'] = f"💙 {clean_name}"
+        elif row['Role'] == "Exceptions":
+            df.at[idx, 'Associate'] = f"💛 {clean_name}"
+        else:
+            df.at[idx, 'Associate'] = clean_name
+    return df
 
 def calculate_staggered_lunches(df):
     if df.empty: return df
@@ -222,6 +238,7 @@ if not df.empty:
         target = s2.selectbox("Assign Role:", ["Pickers", "Backroom", "Exceptions", "Exclude"])
         if s3.button("🚀 Apply"):
             st.session_state.main_df.loc[st.session_state.main_df['Associate'].isin(selected), 'Role'] = target
+            st.session_state.main_df = add_role_icons(st.session_state.main_df)
             st.rerun()
         if s4.button("🗑️ Delete"):
             st.session_state.main_df = st.session_state.main_df[~st.session_state.main_df['Associate'].isin(selected)]
@@ -229,15 +246,17 @@ if not df.empty:
     with c2:
         st.subheader("Finalize")
         if st.button("🔥 GENERATE LUNCHES", type="primary", use_container_width=True):
+            st.session_state.main_df = add_role_icons(st.session_state.main_df)
             st.session_state.main_df = calculate_staggered_lunches(st.session_state.main_df)
             st.session_state.calculated = True
             st.rerun()
 
     st.subheader("Master Daily Roster")
-    # Apply the pink/blue/yellow background colors to the names
-    styled_df = st.session_state.main_df.style.apply(style_roster, axis=1)
+    # Apply visuals
+    st.session_state.main_df = add_role_icons(st.session_state.main_df)
+    styled_view = style_roster(st.session_state.main_df)
 
-    edited_df = st.data_editor(styled_df, column_config={
+    edited_df = st.data_editor(styled_view, column_config={
         "Associate": st.column_config.TextColumn(disabled=False),
         "Role": st.column_config.SelectboxColumn(options=["Pickers", "Backroom", "Exceptions", "Exclude"]),
         "Shift": st.column_config.TextColumn(disabled=False),
@@ -281,8 +300,7 @@ if st.session_state.get('calculated'):
     for i, r_name in enumerate(["Pickers", "Backroom", "Exceptions"]):
         with l_tabs[i]:
             ldf = st.session_state.main_df[st.session_state.main_df['Role']==r_name][["Associate", "Shift", "Lunch Time", "StartDt"]].sort_values("StartDt")
-            # Apply color styles to lunch lists as well
-            st.dataframe(ldf[["Associate", "Shift", "Lunch Time"]].style.apply(style_roster, axis=1), use_container_width=True, hide_index=True)
+            st.dataframe(style_roster(ldf), use_container_width=True, hide_index=True)
 
     csv = st.session_state.main_df[["Associate", "Role", "Shift", "Lunch Time"]].to_csv(index=False).encode('utf-8')
     st.sidebar.download_button("📥 DOWNLOAD CSV", csv, f"OPD_{datetime.now().strftime('%Y-%m-%d')}.csv", "text/csv", use_container_width=True)
