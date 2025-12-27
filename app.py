@@ -12,10 +12,13 @@ st.set_page_config(page_title="OPD Hourly Pickers/Dispensers", layout="wide")
 # --- Google Sheets Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+def get_local_time():
+    """Adjusts server UTC time to Central Standard Time (UTC-6)."""
+    # Note: If you are in Daylight Savings, use timedelta(hours=-5)
+    return (datetime.utcnow() - timedelta(hours=6)).strftime("%I:%M %p")
+
 def load_lists_from_sheets():
-    """Reads names from the 'Roster' and 'Exclude' tabs using the URL in Secrets."""
     try:
-        # Use the URL specifically for better stability
         url = st.secrets["connections"]["gsheets"]["spreadsheet"]
         roster_df = conn.read(spreadsheet=url, worksheet="Roster", ttl=0) 
         exclude_df = conn.read(spreadsheet=url, worksheet="Exclude", ttl=0)
@@ -23,14 +26,14 @@ def load_lists_from_sheets():
         roster_names = "\n".join(roster_df.iloc[:, 0].dropna().astype(str).tolist())
         exclude_names = "\n".join(exclude_df.iloc[:, 0].dropna().astype(str).tolist())
         
-        st.session_state.last_sync = datetime.now().strftime("%I:%M %p")
+        # Use the new local time function
+        st.session_state.last_sync = get_local_time()
         return roster_names, exclude_names
     except Exception as e:
         st.error(f"Error connecting to Google Sheets: {e}")
         return "Add Names Here", "Manager Name"
 
 def save_lists_to_sheets(roster_text, exclude_text):
-    """Overwrites the Google Sheet tabs and updates sync time."""
     try:
         url = st.secrets["connections"]["gsheets"]["spreadsheet"]
         r_df = pd.DataFrame([n.strip() for n in roster_text.split('\n') if n.strip()], columns=["Names"])
@@ -39,7 +42,8 @@ def save_lists_to_sheets(roster_text, exclude_text):
         conn.update(spreadsheet=url, worksheet="Roster", data=r_df)
         conn.update(spreadsheet=url, worksheet="Exclude", data=e_df)
         
-        st.session_state.last_sync = datetime.now().strftime("%I:%M %p")
+        # Use the new local time function
+        st.session_state.last_sync = get_local_time()
         st.sidebar.success(f"✅ Saved at {st.session_state.last_sync}")
     except Exception as e:
         st.sidebar.error(f"Failed to save: {e}")
@@ -226,3 +230,4 @@ if uploaded_file:
 
         csv = st.session_state.main_df[["Associate", "Role", "Shift", "Lunch Time"]].to_csv(index=False).encode('utf-8')
         st.sidebar.download_button("📥 DOWNLOAD CSV", csv, f"OPD_{datetime.now().strftime('%Y-%m-%d')}.csv", "text/csv", use_container_width=True)
+
