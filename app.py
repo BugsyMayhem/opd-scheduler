@@ -14,7 +14,6 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 # --- Helper Functions ---
 def get_local_time():
-    """Adjusts UTC to Central Time (Wisconsin) based on current date."""
     now_utc = datetime.utcnow()
     year = now_utc.year
     dst_start = datetime(year, 3, 8) + timedelta(days=(6 - datetime(year, 3, 8).weekday()) % 7)
@@ -48,7 +47,6 @@ def save_lists_to_sheets(roster_text, exclude_text):
         st.sidebar.error(f"Failed to save: {e}")
 
 def save_history():
-    """Saves a snapshot of the current main_df for the Undo button."""
     if "history" not in st.session_state:
         st.session_state.history = []
     st.session_state.history.append(st.session_state.main_df.copy())
@@ -132,60 +130,58 @@ def process_pdf(file, associate_input, exclude_input):
                         if len(pot) > 3: mismatches.append(pot)
     return pd.DataFrame(data), list(set(mismatches))
 
-# --- Sidebar ---
-st.sidebar.header("☁️ Database Management")
+# --- Sidebar Logic ---
+st.sidebar.header("☁️ Database")
 if 'r_val' not in st.session_state:
     r, e = load_lists_from_sheets()
     st.session_state.r_val, st.session_state.e_val = r, e
 
-sync_time = st.session_state.get('last_sync', 'Never')
 col_s1, col_s2 = st.sidebar.columns([3, 1])
-col_s1.write(f"**Last Sync:** {sync_time}")
+col_s1.write(f"Sync: {st.session_state.get('last_sync', 'Never')}")
 if col_s2.button("🔄"):
     r, e = load_lists_from_sheets()
     st.session_state.r_val, st.session_state.e_val = r, e
     st.rerun()
 
-assoc_input = st.sidebar.text_area("Whitelist (Google Sheets)", value=st.session_state.r_val, height=200)
-excl_input = st.sidebar.text_area("Blacklist (Google Sheets)", value=st.session_state.e_val, height=150)
-if st.sidebar.button("💾 SAVE PERMANENTLY TO SHEETS", use_container_width=True):
+assoc_input = st.sidebar.text_area("Whitelist", value=st.session_state.r_val, height=200)
+excl_input = st.sidebar.text_area("Blacklist", value=st.session_state.e_val, height=150)
+if st.sidebar.button("💾 SAVE TO SHEETS"):
     save_lists_to_sheets(assoc_input, excl_input)
     st.session_state.r_val, st.session_state.e_val = assoc_input, excl_input
 
-# --- Main UI ---
+# --- MAIN UI START ---
 st.title("📅 OPD Hourly Pickers/Dispensers")
 
-# Initialize Session States
+# Initialize Session Data
 if 'main_df' not in st.session_state:
     st.session_state.main_df = pd.DataFrame(columns=["Associate", "Role", "Shift", "Lunch Time", "StartDt", "EndDt", "Duration"])
 if 'history' not in st.session_state:
     st.session_state.history = []
 
-# --- 1. QUICK CONTROL BAR (Permanently Visible) ---
+# --- 1. QUICK CONTROLS (At the Top) ---
 st.subheader("🛠️ Quick Controls")
-q_col1, q_col2, q_col3 = st.columns([1, 1, 2])
+qc1, qc2, qc3 = st.columns([1, 1, 2])
 
-# Undo Button
-undo_disabled = len(st.session_state.history) == 0
-if q_col1.button("↩️ Undo Last Action", use_container_width=True, disabled=undo_disabled):
+# Undo Button logic
+history_count = len(st.session_state.history)
+if qc1.button(f"↩️ Undo ({history_count})", use_container_width=True, disabled=(history_count == 0)):
     st.session_state.main_df = st.session_state.history.pop()
     st.rerun()
 
-# Clear Roster Button
-if q_col2.button("🗑️ Clear Entire Roster", type="secondary", use_container_width=True):
+if qc2.button("🗑️ Clear All", type="secondary", use_container_width=True):
     save_history()
     st.session_state.main_df = pd.DataFrame(columns=["Associate", "Role", "Shift", "Lunch Time", "StartDt", "EndDt", "Duration"])
     st.rerun()
 
 st.divider()
 
-# --- 2. Manual Entry Section ---
+# --- 2. Manual Entry ---
 with st.expander("➕ Manually Add Associate"):
     ma1, ma2, ma3, ma4 = st.columns([2, 1, 1, 1])
     whitelist = sorted([n.strip() for n in assoc_input.split('\n') if n.strip()])
-    new_a = ma1.selectbox("Name", options=whitelist if whitelist else ["No Names found"])
+    new_a = ma1.selectbox("Name", options=whitelist if whitelist else ["No Names"])
     new_r = ma2.selectbox("Role", options=["Pickers", "Backroom", "Exceptions", "Exclude"])
-    new_s = ma3.text_input("Shift (e.g. 5am-2pm)")
+    new_s = ma3.text_input("Shift (5am-2pm)")
     l_opts = ["Pending...", "N/A", "No Slot Avail"] + [(datetime(2025,1,1,0,0)+timedelta(minutes=30*i)).strftime("%I:%M %p") for i in range(48)]
     new_l = ma4.selectbox("Lunch", options=l_opts)
     
@@ -198,15 +194,15 @@ with st.expander("➕ Manually Add Associate"):
             dur = (r_e - s_dt).total_seconds() / 3600
         except: s_dt, r_e, dur = None, None, 0
         
-        disp_name = new_a
+        d_name = new_a
         if "(m)" in new_a.lower() or "minor" in new_a.lower():
             p = new_a.replace("(m)", "").replace("minor", "").strip().title().split()
-            disp_name = f"👶 {p[0]} {p[1][0]}." if len(p) > 1 else f"👶 {p[0]}"
+            d_name = f"👶 {p[0]} {p[1][0]}." if len(p) > 1 else f"👶 {p[0]}"
         else:
             p = new_a.title().split()
-            disp_name = f"{p[0]} {p[1][0]}." if len(p) > 1 else p[0]
+            d_name = f"{p[0]} {p[1][0]}." if len(p) > 1 else p[0]
             
-        nr = pd.DataFrame([{"Associate": disp_name, "Role": new_r, "Shift": new_s, "Lunch Time": new_l, "StartDt": s_dt, "EndDt": r_e, "Duration": dur}])
+        nr = pd.DataFrame([{"Associate": d_name, "Role": new_r, "Shift": new_s, "Lunch Time": new_l, "StartDt": s_dt, "EndDt": r_e, "Duration": dur}])
         st.session_state.main_df = pd.concat([st.session_state.main_df, nr], ignore_index=True)
         st.rerun()
 
@@ -216,41 +212,40 @@ if uploaded_file and st.button("📂 Load PDF into Roster", use_container_width=
     save_history()
     new_df, mismatches = process_pdf(uploaded_file, assoc_input, excl_input)
     st.session_state.main_df = pd.concat([st.session_state.main_df, new_df], ignore_index=True)
-    st.session_state.mismatches = mismatches
     st.rerun()
 
-# --- 4. Main Data Display & Bulk Tools ---
+# --- 4. Table & Tools ---
 df = st.session_state.main_df
 if not df.empty:
     st.divider()
+    # Metrics
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("🛒 Pickers", len(df[df['Role'] == 'Pickers']))
     m2.metric("📦 Backroom", len(df[df['Role'] == 'Backroom']))
     m3.metric("⚠️ Exceptions", len(df[df['Role'] == 'Exceptions']))
     m4.metric("❌ Excluded", len(df[df['Role'] == 'Exclude']))
 
+    # Bulk Tools
     st.subheader("Roster Management")
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        s1, s2, s3, s4 = st.columns([2, 1, 1, 1])
-        selected = s1.multiselect("Select People:", options=df['Associate'].tolist())
-        target = s2.selectbox("Assign Role:", ["Pickers", "Backroom", "Exceptions", "Exclude"])
-        if s3.button("🚀 Apply"):
-            save_history()
-            st.session_state.main_df.loc[st.session_state.main_df['Associate'].isin(selected), 'Role'] = target
-            st.rerun()
-        if s4.button("❌ Delete"):
-            save_history()
-            st.session_state.main_df = st.session_state.main_df[~st.session_state.main_df['Associate'].isin(selected)]
-            st.rerun()
-    with c2:
-        if st.button("🔥 GENERATE LUNCHES", type="primary", use_container_width=True):
-            save_history()
-            st.session_state.main_df = calculate_staggered_lunches(st.session_state.main_df)
-            st.session_state.calculated = True
-            st.rerun()
+    bt1, bt2, bt3, bt4 = st.columns([2, 1, 1, 1])
+    sel = bt1.multiselect("Select People:", options=df['Associate'].tolist())
+    target_r = bt2.selectbox("Set Role:", ["Pickers", "Backroom", "Exceptions", "Exclude"])
+    if bt3.button("🚀 Apply"):
+        save_history()
+        st.session_state.main_df.loc[st.session_state.main_df['Associate'].isin(sel), 'Role'] = target_r
+        st.rerun()
+    if bt4.button("❌ Delete"):
+        save_history()
+        st.session_state.main_df = st.session_state.main_df[~st.session_state.main_df['Associate'].isin(sel)]
+        st.rerun()
 
-    # Master Table Editor
+    if st.button("🔥 GENERATE LUNCHES", type="primary", use_container_width=True):
+        save_history()
+        st.session_state.main_df = calculate_staggered_lunches(st.session_state.main_df)
+        st.session_state.calculated = True
+        st.rerun()
+
+    # Master Table
     st.subheader("Master Daily Roster")
     edited_df = st.data_editor(st.session_state.main_df.style.applymap(highlight_no_slots, subset=['Lunch Time']), column_config={
         "Associate": st.column_config.TextColumn(disabled=False),
@@ -259,12 +254,11 @@ if not df.empty:
         "Lunch Time": st.column_config.SelectboxColumn(options=l_opts),
         "StartDt": None, "EndDt": None, "Duration": None
     }, use_container_width=True, hide_index=True)
-    
     if not edited_df.equals(st.session_state.main_df):
         st.session_state.main_df = edited_df
         st.rerun()
 
-# --- 5. Hourly & Lunch Tabs ---
+# --- 5. Final Output ---
 if st.session_state.get('calculated'):
     st.divider()
     h_tabs = st.tabs(["🛒 Pickers Count", "📦 Backroom Count", "⚠️ Exceptions Count"])
