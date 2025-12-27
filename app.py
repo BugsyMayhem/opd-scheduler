@@ -117,7 +117,20 @@ def calculate_staggered_lunches(df):
 def process_pdf(file, associate_input, exclude_input):
     data, mismatches = [], []
     t_regex = r"(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*-\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))"
-    v_names = [n.strip().lower() for n in associate_input.split('\n') if n.strip()]
+    
+    # Create a list of dictionaries to track name vs. minor status
+    v_names_list = []
+    for n in associate_input.split('\n'):
+        if n.strip():
+            raw_name = n.strip().lower()
+            # Clean name for searching (remove (m) or minor)
+            search_name = raw_name.replace("(m)", "").replace("minor", "").strip()
+            v_names_list.append({
+                "search": search_name,
+                "display_raw": n.strip(),
+                "is_minor": ("(m)" in raw_name or "minor" in raw_name)
+            })
+            
     e_names = [n.strip().lower() for n in exclude_input.split('\n') if n.strip()]
     
     with pdfplumber.open(file) as pdf:
@@ -127,24 +140,23 @@ def process_pdf(file, associate_input, exclude_input):
             for line in text.split('\n'):
                 m = re.search(t_regex, line.strip(), re.IGNORECASE)
                 if m:
-                    if any(ex in line.lower() for ex in e_names): continue
+                    # 1. Check Blacklist first
+                    if any(ex in line.lower() for ex in e_names): 
+                        continue
+                    
                     match_name = None
                     is_minor = False
-                    for name_key in v_names:
-                        # Clean the key to find the name in the PDF
-                        clean_key = name_key.replace("(m)", "").replace("minor", "").strip()
-                        if clean_key in line.lower():
-                            # Check if your database entry has the minor tag
-                            if "(m)" in name_key or "minor" in name_key:
-                                is_minor = True
+                    
+                    # 2. Search for the CLEAN name in the PDF line
+                    for entry in v_names_list:
+                        if entry["search"] in line.lower():
+                            is_minor = entry["is_minor"]
+                            # Format for display: "Khloe W."
+                            parts = entry["search"].title().split()
+                            formatted = f"{parts[0]} {parts[1][0]}.".strip() if len(parts) > 1 else parts[0]
                             
-                            parts = clean_key.title().split()
-                            # Format name as "First L."
-                            match_name = f"{parts[0]} {parts[1][0]}.".strip() if len(parts) > 1 else parts[0]
-                            
-                            # Add the icon if they are a minor
-                            if is_minor:
-                                match_name = f"👶 {match_name}"
+                            # Add icon if minor
+                            match_name = f"👶 {formatted}" if is_minor else formatted
                             break 
                     
                     if match_name:
@@ -161,8 +173,11 @@ def process_pdf(file, associate_input, exclude_input):
                                 "Duration": (real_end - st_dt).total_seconds() / 3600
                             })
                     else:
+                        # If no match found in whitelist, add to mismatch list
                         pot = line.split('-')[0].split('am')[0].split('pm')[0].strip()
-                        if len(pot) > 3: mismatches.append(pot)
+                        if len(pot) > 3: 
+                            mismatches.append(pot)
+                            
     return pd.DataFrame(data), list(set(mismatches))
 
 # --- Sidebar ---
@@ -272,6 +287,7 @@ if uploaded_file:
 
         csv = st.session_state.main_df[["Associate", "Role", "Shift", "Lunch Time"]].to_csv(index=False).encode('utf-8')
         st.sidebar.download_button("📥 DOWNLOAD CSV", csv, f"OPD_{datetime.now().strftime('%Y-%m-%d')}.csv", "text/csv", use_container_width=True)
+
 
 
 
