@@ -14,9 +14,10 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 # --- Helper Functions ---
 def get_local_time():
-    """Adjusts UTC to Central Time based on date."""
+    """Adjusts UTC to Central Time (Wisconsin) based on current date."""
     now_utc = datetime.utcnow()
     year = now_utc.year
+    # US DST: 2nd Sun March to 1st Sun Nov
     dst_start = datetime(year, 3, 8) + timedelta(days=(6 - datetime(year, 3, 8).weekday()) % 7)
     dst_end = datetime(year, 11, 1) + timedelta(days=(6 - datetime(year, 11, 1).weekday()) % 7)
     offset = 5 if dst_start <= now_utc <= dst_end else 6
@@ -48,7 +49,7 @@ def save_lists_to_sheets(roster_text, exclude_text):
         st.sidebar.error(f"Failed to save: {e}")
 
 def save_history():
-    """Saves a snapshot of the current main_df to the history stack."""
+    """Saves a snapshot of the current main_df for the Undo button."""
     if "history" not in st.session_state:
         st.session_state.history = []
     st.session_state.history.append(st.session_state.main_df.copy())
@@ -146,9 +147,9 @@ if col_s2.button("🔄"):
     st.session_state.r_val, st.session_state.e_val = r, e
     st.rerun()
 
-assoc_input = st.sidebar.text_area("Whitelist", value=st.session_state.r_val, height=200)
-excl_input = st.sidebar.text_area("Blacklist", value=st.session_state.e_val, height=150)
-if st.sidebar.button("💾 SAVE PERMANENTLY", use_container_width=True):
+assoc_input = st.sidebar.text_area("Whitelist (Google Sheets)", value=st.session_state.r_val, height=200)
+excl_input = st.sidebar.text_area("Blacklist (Google Sheets)", value=st.session_state.e_val, height=150)
+if st.sidebar.button("💾 SAVE PERMANENTLY TO SHEETS", use_container_width=True):
     save_lists_to_sheets(assoc_input, excl_input)
     st.session_state.r_val, st.session_state.e_val = assoc_input, excl_input
 
@@ -165,9 +166,9 @@ if 'history' not in st.session_state:
 with st.expander("➕ Manually Add Associate"):
     ma1, ma2, ma3, ma4 = st.columns([2, 1, 1, 1])
     whitelist = sorted([n.strip() for n in assoc_input.split('\n') if n.strip()])
-    new_a = ma1.selectbox("Name", options=whitelist if whitelist else ["No Names in Database"])
+    new_a = ma1.selectbox("Name", options=whitelist if whitelist else ["No Names found"])
     new_r = ma2.selectbox("Role", options=["Pickers", "Backroom", "Exceptions", "Exclude"])
-    new_s = ma3.text_input("Shift (5am-2pm)")
+    new_s = ma3.text_input("Shift (e.g. 5am-2pm)")
     l_opts = ["Pending...", "N/A", "No Slot Avail"] + [(datetime(2025,1,1,0,0)+timedelta(minutes=30*i)).strftime("%I:%M %p") for i in range(48)]
     new_l = ma4.selectbox("Lunch", options=l_opts)
     
@@ -204,7 +205,7 @@ if uploaded_file and col_u2.button("📂 Load PDF into Roster", use_container_wi
     st.session_state.mismatches = mismatches
     st.rerun()
 
-# 3. Main Logic & Display
+# 3. Display Data & Tools
 df = st.session_state.main_df
 if not df.empty:
     m1, m2, m3, m4 = st.columns(4)
@@ -215,15 +216,15 @@ if not df.empty:
 
     st.divider()
 
-    # Bulk Tools, Undo, Clear
+    # Undo, Clear, Bulk Tools
     c1, c2 = st.columns([2, 1])
     with c1:
         st.subheader("Roster Management")
         t_col1, t_col2 = st.columns(2)
-        if st.session_state.history:
-            if t_col1.button("↩️ Undo Last Action", use_container_width=True):
-                st.session_state.main_df = st.session_state.history.pop()
-                st.rerun()
+        undo_locked = len(st.session_state.history) == 0
+        if t_col1.button("↩️ Undo Last Action", use_container_width=True, disabled=undo_locked):
+            st.session_state.main_df = st.session_state.history.pop()
+            st.rerun()
         if t_col2.button("🗑️ Clear Entire Roster", type="secondary", use_container_width=True):
             save_history()
             st.session_state.main_df = pd.DataFrame(columns=["Associate", "Role", "Shift", "Lunch Time", "StartDt", "EndDt", "Duration"])
