@@ -11,35 +11,35 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="OPD Hourly Pickers/Dispensers", layout="wide")
 
 # --- Google Sheets Connection Setup ---
-# This looks for the [connections.gsheets] info you put in your Streamlit Secrets
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_lists_from_sheets():
-    """Reads names from the 'Roster' and 'Exclude' tabs of your Google Sheet."""
+    """Reads names from Google Sheets and records the sync time."""
     try:
-        # worksheet name must match exactly in Google Sheets
         roster_df = conn.read(worksheet="Roster", ttl=0) 
         exclude_df = conn.read(worksheet="Exclude", ttl=0)
         
-        # Convert the first column of each sheet into a clean list of names
         roster_names = "\n".join(roster_df.iloc[:, 0].dropna().astype(str).tolist())
         exclude_names = "\n".join(exclude_df.iloc[:, 0].dropna().astype(str).tolist())
+        
+        # Save sync time to session state
+        st.session_state.last_sync = datetime.now().strftime("%m/%d %I:%M %p")
         return roster_names, exclude_names
     except Exception as e:
         st.error(f"Error connecting to Google Sheets: {e}")
         return "Add Names Here", "Manager Name"
 
 def save_lists_to_sheets(roster_text, exclude_text):
-    """Overwrites the Google Sheet tabs with your updated lists."""
+    """Overwrites the Google Sheet tabs and updates sync time."""
     try:
-        # Create DataFrames from the text areas
         r_df = pd.DataFrame([n.strip() for n in roster_text.split('\n') if n.strip()], columns=["Names"])
         e_df = pd.DataFrame([n.strip() for n in exclude_text.split('\n') if n.strip()], columns=["Names"])
         
-        # Push to Google Sheets
         conn.update(worksheet="Roster", data=r_df)
         conn.update(worksheet="Exclude", data=e_df)
-        st.sidebar.success("✅ Database Updated Permanently!")
+        
+        st.session_state.last_sync = datetime.now().strftime("%m/%d %I:%M %p")
+        st.sidebar.success(f"✅ Database Updated at {st.session_state.last_sync}")
     except Exception as e:
         st.sidebar.error(f"Failed to save: {e}")
 
@@ -141,15 +141,24 @@ def process_pdf(file, associate_input, exclude_input):
 st.sidebar.header("☁️ Database Management")
 
 # Initialize and Load Lists from Google Sheets
-current_r, current_e = load_lists_from_sheets()
+if 'last_sync' not in st.session_state:
+    current_r, current_e = load_lists_from_sheets()
+    st.session_state.r_val, st.session_state.e_val = current_r, current_e
+else:
+    current_r, current_e = st.session_state.r_val, st.session_state.e_val
 
 assoc_input = st.sidebar.text_area("Associate Names (Whitelist):", value=current_r, height=250)
 excl_input = st.sidebar.text_area("Auto-Exclude List (Blacklist):", value=current_e, height=200)
 
 if st.sidebar.button("💾 SAVE PERMANENTLY TO SHEETS"):
     save_lists_to_sheets(assoc_input, excl_input)
+    st.session_state.r_val, st.session_state.e_val = assoc_input, excl_input
+
+if 'last_sync' in st.session_state:
+    st.sidebar.caption(f"Last Synced: {st.session_state.last_sync}")
 
 # --- Main UI ---
+st.title("📅 OPD Hourly Pickers/Dispensers")
 uploaded_file = st.file_uploader("Upload Roster PDF", type="pdf")
 
 if uploaded_file:
