@@ -13,9 +13,21 @@ st.set_page_config(page_title="OPD Hourly Pickers/Dispensers", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_local_time():
-    """Adjusts server UTC time to Central Standard Time (UTC-6)."""
-    # Note: If you are in Daylight Savings, use timedelta(hours=-5)
-    return (datetime.utcnow() - timedelta(hours=6)).strftime("%I:%M %p")
+    """Automatically adjusts for Central Standard (UTC-6) or Daylight (UTC-5) Time."""
+    now_utc = datetime.utcnow()
+    
+    # Simple Daylight Savings Check for Central Time (Standard: 2nd Sun March - 1st Sun Nov)
+    # This logic covers most years accurately for US Central Time
+    year = now_utc.year
+    dst_start = datetime(year, 3, 8) + timedelta(days=(6 - datetime(year, 3, 8).weekday()) % 7)
+    dst_end = datetime(year, 11, 1) + timedelta(days=(6 - datetime(year, 11, 1).weekday()) % 7)
+    
+    if dst_start <= now_utc <= dst_end:
+        offset = 5  # CDT
+    else:
+        offset = 6  # CST
+        
+    return (now_utc - timedelta(hours=offset)).strftime("%I:%M %p")
 
 def load_lists_from_sheets():
     try:
@@ -26,7 +38,6 @@ def load_lists_from_sheets():
         roster_names = "\n".join(roster_df.iloc[:, 0].dropna().astype(str).tolist())
         exclude_names = "\n".join(exclude_df.iloc[:, 0].dropna().astype(str).tolist())
         
-        # Use the new local time function
         st.session_state.last_sync = get_local_time()
         return roster_names, exclude_names
     except Exception as e:
@@ -42,7 +53,6 @@ def save_lists_to_sheets(roster_text, exclude_text):
         conn.update(spreadsheet=url, worksheet="Roster", data=r_df)
         conn.update(spreadsheet=url, worksheet="Exclude", data=e_df)
         
-        # Use the new local time function
         st.session_state.last_sync = get_local_time()
         st.sidebar.success(f"✅ Saved at {st.session_state.last_sync}")
     except Exception as e:
@@ -230,4 +240,5 @@ if uploaded_file:
 
         csv = st.session_state.main_df[["Associate", "Role", "Shift", "Lunch Time"]].to_csv(index=False).encode('utf-8')
         st.sidebar.download_button("📥 DOWNLOAD CSV", csv, f"OPD_{datetime.now().strftime('%Y-%m-%d')}.csv", "text/csv", use_container_width=True)
+
 
