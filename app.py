@@ -12,7 +12,7 @@ st.set_page_config(page_title="OPD Hourly Roster", layout="wide")
 # --- Google Sheets Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- 1. SESSION STATE INITIALIZATION (Must be at top) ---
+# --- 1. SESSION STATE INITIALIZATION ---
 if 'main_df' not in st.session_state:
     st.session_state.main_df = pd.DataFrame(columns=["Associate", "Role", "Shift", "Lunch Time", "StartDt", "EndDt", "Duration"])
 if 'history' not in st.session_state:
@@ -20,17 +20,13 @@ if 'history' not in st.session_state:
 
 # --- Helper Functions ---
 def get_local_time():
+    """Adjusts UTC to Central Time (Wisconsin) based on current date."""
     now_utc = datetime.utcnow()
     year = now_utc.year
     dst_start = datetime(year, 3, 8) + timedelta(days=(6 - datetime(year, 3, 8).weekday()) % 7)
     dst_end = datetime(year, 11, 1) + timedelta(days=(6 - datetime(year, 11, 1).weekday()) % 7)
     offset = 5 if dst_start <= now_utc <= dst_end else 6
     return (now_utc - timedelta(hours=offset)).strftime("%I:%M %p")
-
-def save_history():
-    st.session_state.history.append(st.session_state.main_df.copy())
-    if len(st.session_state.history) > 10:
-        st.session_state.history.pop(0)
 
 def load_lists_from_sheets():
     try:
@@ -44,6 +40,23 @@ def load_lists_from_sheets():
     except Exception as e:
         st.error(f"Sheet Error: {e}")
         return "Add Names Here", "Manager Name"
+
+def save_lists_to_sheets(roster_text, exclude_text):
+    try:
+        url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+        r_df = pd.DataFrame([n.strip() for n in roster_text.split('\n') if n.strip()], columns=["Names"])
+        e_df = pd.DataFrame([n.strip() for n in exclude_text.split('\n') if n.strip()], columns=["Names"])
+        conn.update(spreadsheet=url, worksheet="Roster", data=r_df)
+        conn.update(spreadsheet=url, worksheet="Exclude", data=e_df)
+        st.session_state.last_sync = get_local_time()
+        st.sidebar.success(f"✅ Saved to Sheets at {st.session_state.last_sync}")
+    except Exception as e:
+        st.sidebar.error(f"Failed to save: {e}")
+
+def save_history():
+    st.session_state.history.append(st.session_state.main_df.copy())
+    if len(st.session_state.history) > 10:
+        st.session_state.history.pop(0)
 
 def parse_time(time_str):
     if not time_str: return None
@@ -115,18 +128,34 @@ def calculate_staggered_lunches(df):
     for item in ex: item['Lunch Time'] = "N/A"; final.append(item)
     return pd.DataFrame(final)
 
-# --- SIDEBAR ---
-st.sidebar.title("☁️ Settings")
+# --- SIDEBAR (Persistent Storage Controls) ---
+st.sidebar.title("☁️ Database Settings")
 if 'r_val' not in st.session_state:
     r, e = load_lists_from_sheets()
     st.session_state.r_val, st.session_state.e_val = r, e
 
-assoc_input = st.sidebar.text_area("Whitelist", value=st.session_state.r_val, height=200)
-excl_input = st.sidebar.text_area("Blacklist", value=st.session_state.e_val, height=150)
+# Sync Info
+sync_time = st.session_state.get('last_sync', 'Never')
+col_s1, col_s2 = st.sidebar.columns([3, 1])
+col_s1.write(f"Sync: {sync_time}")
+if col_s2.button("🔄"):
+    r, e = load_lists_from_sheets()
+    st.session_state.r_val, st.session_state.e_val = r, e
+    st.rerun()
 
-# --- 2. THE TOP CONTROL BAR (FORCE-LOADED) ---
+# Text Areas
+assoc_input = st.sidebar.text_area("Whitelist (Associates)", value=st.session_state.r_val, height=250)
+excl_input = st.sidebar.text_area("Blacklist (Excluded)", value=st.session_state.e_val, height=150)
+
+# The Restored Save Button
+if st.sidebar.button("💾 SAVE PERMANENTLY TO SHEETS", use_container_width=True):
+    save_lists_to_sheets(assoc_input, excl_input)
+    st.session_state.r_val, st.session_state.e_val = assoc_input, excl_input
+
+# --- MAIN UI START ---
 st.title("📅 OPD Hourly Roster")
 
+# --- 1. QUICK CONTROLS ---
 st.markdown("### 🛠️ Quick Controls")
 col_undo, col_clear, col_space = st.columns([1, 1, 2])
 
@@ -144,7 +173,7 @@ if col_clear.button("🗑️ Clear Roster", type="secondary", use_container_widt
 
 st.divider()
 
-# --- 3. MANUAL ENTRY & PDF UPLOAD ---
+# --- 2. ADDING DATA (Manual & PDF) ---
 c1, c2 = st.columns(2)
 
 with c1:
@@ -182,10 +211,17 @@ with c2:
         st.session_state.main_df = pd.concat([st.session_state.main_df, new_df], ignore_index=True)
         st.rerun()
 
-# --- 4. DATA DISPLAY ---
+# --- 3. ROSTER DISPLAY & TOOLS ---
 df = st.session_state.main_df
 if not df.empty:
     st.divider()
+    # Metrics
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("🛒 Pickers", len(df[df['Role'] == 'Pickers']))
+    m2.metric("📦 Backroom", len(df[df['Role'] == 'Backroom']))
+    m3.metric("⚠️ Exceptions", len(df[df['Role'] == 'Exceptions']))
+    m4.metric("❌ Excluded", len(df[df['Role'] == 'Exclude']))
+
     # Bulk Tools
     st.subheader("📋 Roster Management")
     b1, b2, b3, b4 = st.columns([2, 1, 1, 1])
@@ -206,7 +242,8 @@ if not df.empty:
         st.session_state.calculated = True
         st.rerun()
 
-    # Table
+    # Master Table Editor
+    st.subheader("Master Daily Roster")
     l_opts = ["Pending...", "N/A", "No Slot Avail"] + [(datetime(2025,1,1,0,0)+timedelta(minutes=30*i)).strftime("%I:%M %p") for i in range(48)]
     edited = st.data_editor(st.session_state.main_df, column_config={
         "Associate": st.column_config.TextColumn(disabled=False),
@@ -219,7 +256,7 @@ if not df.empty:
         st.session_state.main_df = edited
         st.rerun()
 
-# --- 5. OUTPUT TABS ---
+# --- 4. OUTPUT TABS ---
 if st.session_state.get('calculated'):
     st.divider()
     h_tabs = st.tabs(["🛒 Pickers", "📦 Backroom", "⚠️ Exceptions"])
