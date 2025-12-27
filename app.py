@@ -17,7 +17,6 @@ def get_local_time():
     """Adjusts UTC to Central Time (Wisconsin) based on current date."""
     now_utc = datetime.utcnow()
     year = now_utc.year
-    # US DST: 2nd Sun March to 1st Sun Nov
     dst_start = datetime(year, 3, 8) + timedelta(days=(6 - datetime(year, 3, 8).weekday()) % 7)
     dst_end = datetime(year, 11, 1) + timedelta(days=(6 - datetime(year, 11, 1).weekday()) % 7)
     offset = 5 if dst_start <= now_utc <= dst_end else 6
@@ -162,7 +161,25 @@ if 'main_df' not in st.session_state:
 if 'history' not in st.session_state:
     st.session_state.history = []
 
-# 1. Manual Entry Section
+# --- 1. QUICK CONTROL BAR (Permanently Visible) ---
+st.subheader("🛠️ Quick Controls")
+q_col1, q_col2, q_col3 = st.columns([1, 1, 2])
+
+# Undo Button
+undo_disabled = len(st.session_state.history) == 0
+if q_col1.button("↩️ Undo Last Action", use_container_width=True, disabled=undo_disabled):
+    st.session_state.main_df = st.session_state.history.pop()
+    st.rerun()
+
+# Clear Roster Button
+if q_col2.button("🗑️ Clear Entire Roster", type="secondary", use_container_width=True):
+    save_history()
+    st.session_state.main_df = pd.DataFrame(columns=["Associate", "Role", "Shift", "Lunch Time", "StartDt", "EndDt", "Duration"])
+    st.rerun()
+
+st.divider()
+
+# --- 2. Manual Entry Section ---
 with st.expander("➕ Manually Add Associate"):
     ma1, ma2, ma3, ma4 = st.columns([2, 1, 1, 1])
     whitelist = sorted([n.strip() for n in assoc_input.split('\n') if n.strip()])
@@ -193,44 +210,28 @@ with st.expander("➕ Manually Add Associate"):
         st.session_state.main_df = pd.concat([st.session_state.main_df, nr], ignore_index=True)
         st.rerun()
 
-st.divider()
-
-# 2. File Upload
-col_u1, col_u2 = st.columns([3, 1])
-uploaded_file = col_u1.file_uploader("Upload Roster PDF", type="pdf")
-if uploaded_file and col_u2.button("📂 Load PDF into Roster", use_container_width=True):
+# --- 3. File Upload ---
+uploaded_file = st.file_uploader("Upload Roster PDF", type="pdf")
+if uploaded_file and st.button("📂 Load PDF into Roster", use_container_width=True):
     save_history()
     new_df, mismatches = process_pdf(uploaded_file, assoc_input, excl_input)
     st.session_state.main_df = pd.concat([st.session_state.main_df, new_df], ignore_index=True)
     st.session_state.mismatches = mismatches
     st.rerun()
 
-# 3. Display Data & Tools
+# --- 4. Main Data Display & Bulk Tools ---
 df = st.session_state.main_df
 if not df.empty:
+    st.divider()
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("🛒 Pickers", len(df[df['Role'] == 'Pickers']))
     m2.metric("📦 Backroom", len(df[df['Role'] == 'Backroom']))
     m3.metric("⚠️ Exceptions", len(df[df['Role'] == 'Exceptions']))
     m4.metric("❌ Excluded", len(df[df['Role'] == 'Exclude']))
 
-    st.divider()
-
-    # Undo, Clear, Bulk Tools
+    st.subheader("Roster Management")
     c1, c2 = st.columns([2, 1])
     with c1:
-        st.subheader("Roster Management")
-        t_col1, t_col2 = st.columns(2)
-        undo_locked = len(st.session_state.history) == 0
-        if t_col1.button("↩️ Undo Last Action", use_container_width=True, disabled=undo_locked):
-            st.session_state.main_df = st.session_state.history.pop()
-            st.rerun()
-        if t_col2.button("🗑️ Clear Entire Roster", type="secondary", use_container_width=True):
-            save_history()
-            st.session_state.main_df = pd.DataFrame(columns=["Associate", "Role", "Shift", "Lunch Time", "StartDt", "EndDt", "Duration"])
-            st.rerun()
-
-        st.write("---")
         s1, s2, s3, s4 = st.columns([2, 1, 1, 1])
         selected = s1.multiselect("Select People:", options=df['Associate'].tolist())
         target = s2.selectbox("Assign Role:", ["Pickers", "Backroom", "Exceptions", "Exclude"])
@@ -243,7 +244,6 @@ if not df.empty:
             st.session_state.main_df = st.session_state.main_df[~st.session_state.main_df['Associate'].isin(selected)]
             st.rerun()
     with c2:
-        st.subheader("Finalize")
         if st.button("🔥 GENERATE LUNCHES", type="primary", use_container_width=True):
             save_history()
             st.session_state.main_df = calculate_staggered_lunches(st.session_state.main_df)
@@ -264,7 +264,7 @@ if not df.empty:
         st.session_state.main_df = edited_df
         st.rerun()
 
-# 4. Hourly & Lunch Tabs
+# --- 5. Hourly & Lunch Tabs ---
 if st.session_state.get('calculated'):
     st.divider()
     h_tabs = st.tabs(["🛒 Pickers Count", "📦 Backroom Count", "⚠️ Exceptions Count"])
