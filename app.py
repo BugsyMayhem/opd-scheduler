@@ -137,25 +137,36 @@ def process_pdf(file, associate_input, exclude_input):
                         if len(potential) > 3: mismatched_names.append(potential)
     return pd.DataFrame(data), list(set(mismatched_names))
 
-# --- Sidebar Management ---
+# --- Updated Sidebar Management ---
 st.sidebar.header("☁️ Database Management")
 
-# Initialize and Load Lists from Google Sheets
+# 1. Display Sync Status at the TOP
 if 'last_sync' not in st.session_state:
+    # Try an immediate sync on first load
     current_r, current_e = load_lists_from_sheets()
     st.session_state.r_val, st.session_state.e_val = current_r, current_e
 else:
     current_r, current_e = st.session_state.r_val, st.session_state.e_val
 
+# Status Row
+col_sync1, col_sync2 = st.sidebar.columns([3, 1])
+sync_time = st.session_state.get('last_sync', 'Never')
+col_sync1.write(f"**Last Sync:** {sync_time}")
+if col_sync2.button("🔄"):
+    current_r, current_e = load_lists_from_sheets()
+    st.session_state.r_val, st.session_state.e_val = current_r, current_e
+    st.rerun()
+
+st.sidebar.divider()
+
+# 2. Input Areas
 assoc_input = st.sidebar.text_area("Associate Names (Whitelist):", value=current_r, height=250)
 excl_input = st.sidebar.text_area("Auto-Exclude List (Blacklist):", value=current_e, height=200)
 
-if st.sidebar.button("💾 SAVE PERMANENTLY TO SHEETS"):
+if st.sidebar.button("💾 SAVE PERMANENTLY TO SHEETS", use_container_width=True):
     save_lists_to_sheets(assoc_input, excl_input)
     st.session_state.r_val, st.session_state.e_val = assoc_input, excl_input
-
-if 'last_sync' in st.session_state:
-    st.sidebar.caption(f"Last Synced: {st.session_state.last_sync}")
+    st.rerun()
 
 # --- Main UI ---
 st.title("📅 OPD Hourly Pickers/Dispensers")
@@ -272,3 +283,4 @@ if uploaded_file:
             mime="text/csv", 
             use_container_width=True
         )
+
