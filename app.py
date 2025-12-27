@@ -66,37 +66,8 @@ def parse_time(time_str):
         except ValueError: continue
     return None
 
-def process_pdf(file, assoc_in, excl_in):
-    data, mismatches = [], []
-    t_regex = r"(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*-\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))"
-    v_list = []
-    for n in assoc_in.split('\n'):
-        if n.strip():
-            raw = n.strip().lower()
-            clean = raw.replace("(m)", "").replace("minor", "").strip()
-            v_list.append({"search": clean, "is_minor": ("(m)" in raw or "minor" in raw)})
-    e_names = [n.strip().lower() for n in excl_in.split('\n') if n.strip()]
-    with pdfplumber.open(file) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if not text: continue
-            for line in text.split('\n'):
-                m = re.search(t_regex, line.strip(), re.IGNORECASE)
-                if m:
-                    if any(ex in line.lower() for ex in e_names): continue
-                    match_name = None
-                    for entry in v_list:
-                        if entry["search"] in line.lower():
-                            parts = entry["search"].title().split()
-                            fmt = f"{parts[0]} {parts[1][0]}.".strip() if len(parts) > 1 else parts[0]
-                            match_name = f"👶 {fmt}" if entry["is_minor"] else fmt
-                            break 
-                    if match_name:
-                        st_dt, en_dt = parse_time(m.group(1)), parse_time(m.group(2))
-                        if st_dt and en_dt:
-                            real_end = en_dt + timedelta(days=1) if en_dt < st_dt else en_dt
-                            data.append({"Associate": match_name, "Role": "Pickers", "Shift": f"{m.group(1)} - {m.group(2)}", "Lunch Time": "Pending...", "StartDt": st_dt, "EndDt": real_end, "Duration": (real_end - st_dt).total_seconds() / 3600})
-    return pd.DataFrame(data)
+def highlight_no_slots(val):
+    return 'color: red; font-weight: bold' if val == "No Slot Avail" else ''
 
 def calculate_staggered_lunches(df):
     if df.empty: return df
@@ -128,6 +99,38 @@ def calculate_staggered_lunches(df):
     for item in ex: item['Lunch Time'] = "N/A"; final.append(item)
     return pd.DataFrame(final)
 
+def process_pdf(file, assoc_in, excl_in):
+    data, mismatches = [], []
+    t_regex = r"(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*-\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))"
+    v_list = []
+    for n in assoc_in.split('\n'):
+        if n.strip():
+            raw = n.strip().lower()
+            clean = raw.replace("(m)", "").replace("minor", "").strip()
+            v_list.append({"search": clean, "raw": n.strip(), "is_minor": ("(m)" in raw or "minor" in raw)})
+    e_names = [n.strip().lower() for n in excl_in.split('\n') if n.strip()]
+    with pdfplumber.open(file) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if not text: continue
+            for line in text.split('\n'):
+                m = re.search(t_regex, line.strip(), re.IGNORECASE)
+                if m:
+                    if any(ex in line.lower() for ex in e_names): continue
+                    match_name = None
+                    for entry in v_list:
+                        if entry["search"] in line.lower():
+                            parts = entry["search"].title().split()
+                            fmt = f"{parts[0]} {parts[1][0]}.".strip() if len(parts) > 1 else parts[0]
+                            match_name = f"👶 {fmt}" if entry["is_minor"] else fmt
+                            break 
+                    if match_name:
+                        st_dt, en_dt = parse_time(m.group(1)), parse_time(m.group(2))
+                        if st_dt and en_dt:
+                            real_end = en_dt + timedelta(days=1) if en_dt < st_dt else en_dt
+                            data.append({"Associate": match_name, "Role": "Pickers", "Shift": f"{m.group(1)} - {m.group(2)}", "Lunch Time": "Pending...", "StartDt": st_dt, "EndDt": real_end, "Duration": (real_end - st_dt).total_seconds() / 3600})
+    return pd.DataFrame(data)
+
 # --- SIDEBAR (Persistent Storage Controls) ---
 st.sidebar.title("☁️ Database Settings")
 if 'r_val' not in st.session_state:
@@ -147,10 +150,14 @@ if col_s2.button("🔄"):
 assoc_input = st.sidebar.text_area("Whitelist (Associates)", value=st.session_state.r_val, height=250)
 excl_input = st.sidebar.text_area("Blacklist (Excluded)", value=st.session_state.e_val, height=150)
 
-# The Restored Save Button
+st.sidebar.divider()
+
+# --- RESTORED SAVE BUTTON ---
 if st.sidebar.button("💾 SAVE PERMANENTLY TO SHEETS", use_container_width=True):
     save_lists_to_sheets(assoc_input, excl_input)
-    st.session_state.r_val, st.session_state.e_val = assoc_input, excl_input
+    # Update current session values
+    st.session_state.r_val = assoc_input
+    st.session_state.e_val = excl_input
 
 # --- MAIN UI START ---
 st.title("📅 OPD Hourly Roster")
@@ -205,7 +212,7 @@ with c1:
 
 with c2:
     pdf_file = st.file_uploader("Upload Roster PDF", type="pdf")
-    if pdf_file and st.button("📂 Process PDF"):
+    if pdf_file and st.button("📂 Process PDF", use_container_width=True):
         save_history()
         new_df = process_pdf(pdf_file, assoc_input, excl_input)
         st.session_state.main_df = pd.concat([st.session_state.main_df, new_df], ignore_index=True)
