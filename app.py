@@ -2,7 +2,6 @@ import streamlit as st
 import pdfplumber
 import pandas as pd
 import re
-import os
 import io
 from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
@@ -10,20 +9,21 @@ from streamlit_gsheets import GSheetsConnection
 # --- Page Configuration ---
 st.set_page_config(page_title="OPD Hourly Pickers/Dispensers", layout="wide")
 
-# --- Google Sheets Connection Setup ---
+# --- Google Sheets Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_lists_from_sheets():
-    """Reads names from Google Sheets and records the sync time."""
+    """Reads names from the 'Roster' and 'Exclude' tabs using the URL in Secrets."""
     try:
-        roster_df = conn.read(worksheet="Roster", ttl=0) 
-        exclude_df = conn.read(worksheet="Exclude", ttl=0)
+        # Use the URL specifically for better stability
+        url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+        roster_df = conn.read(spreadsheet=url, worksheet="Roster", ttl=0) 
+        exclude_df = conn.read(spreadsheet=url, worksheet="Exclude", ttl=0)
         
         roster_names = "\n".join(roster_df.iloc[:, 0].dropna().astype(str).tolist())
         exclude_names = "\n".join(exclude_df.iloc[:, 0].dropna().astype(str).tolist())
         
-        # Save sync time to session state
-        st.session_state.last_sync = datetime.now().strftime("%m/%d %I:%M %p")
+        st.session_state.last_sync = datetime.now().strftime("%I:%M %p")
         return roster_names, exclude_names
     except Exception as e:
         st.error(f"Error connecting to Google Sheets: {e}")
@@ -32,14 +32,15 @@ def load_lists_from_sheets():
 def save_lists_to_sheets(roster_text, exclude_text):
     """Overwrites the Google Sheet tabs and updates sync time."""
     try:
+        url = st.secrets["connections"]["gsheets"]["spreadsheet"]
         r_df = pd.DataFrame([n.strip() for n in roster_text.split('\n') if n.strip()], columns=["Names"])
         e_df = pd.DataFrame([n.strip() for n in exclude_text.split('\n') if n.strip()], columns=["Names"])
         
-        conn.update(worksheet="Roster", data=r_df)
-        conn.update(worksheet="Exclude", data=e_df)
+        conn.update(spreadsheet=url, worksheet="Roster", data=r_df)
+        conn.update(spreadsheet=url, worksheet="Exclude", data=e_df)
         
-        st.session_state.last_sync = datetime.now().strftime("%m/%d %I:%M %p")
-        st.sidebar.success(f"✅ Database Updated at {st.session_state.last_sync}")
+        st.session_state.last_sync = datetime.now().strftime("%I:%M %p")
+        st.sidebar.success(f"✅ Saved at {st.session_state.last_sync}")
     except Exception as e:
         st.sidebar.error(f"Failed to save: {e}")
 
@@ -53,8 +54,7 @@ def parse_time(time_str):
     return None
 
 def highlight_no_slots(val):
-    color = 'red' if val == "No Slot Avail" else None
-    return f'color: {color}; font-weight: bold' if color else ''
+    return 'color: red; font-weight: bold' if val == "No Slot Avail" else ''
 
 def calculate_staggered_lunches(df):
     if df.empty: return df
@@ -68,105 +68,79 @@ def calculate_staggered_lunches(df):
                 row['Lunch Time'] = "N/A"
                 final_records.append(row.to_dict())
                 continue
-            
-            target = row['StartDt'] + timedelta(hours=4)
-            earliest_allowed = row['StartDt'] + timedelta(hours=3)
-            latest_allowed = row['StartDt'] + timedelta(hours=5)
-            latest_safe = row['EndDt'] - timedelta(hours=1)
-            final_latest = min(latest_allowed, latest_safe)
-            
-            current_guess = target
-            found = False
-            while current_guess <= final_latest:
-                if not any(abs((current_guess - taken).total_seconds()) < 1800 for taken in taken_slots):
-                    found = True
-                    break
-                current_guess += timedelta(minutes=30)
-            
+            target, early, late = row['StartDt'] + timedelta(hours=4), row['StartDt'] + timedelta(hours=3), row['StartDt'] + timedelta(hours=5)
+            safe_limit = min(late, row['EndDt'] - timedelta(hours=1))
+            curr, found = target, False
+            while curr <= safe_limit:
+                if not any(abs((curr - t).total_seconds()) < 1800 for t in taken_slots):
+                    found = True; break
+                curr += timedelta(minutes=30)
             if not found:
-                current_guess = target - timedelta(minutes=30)
-                while current_guess >= earliest_allowed:
-                    if not any(abs((current_guess - taken).total_seconds()) < 1800 for taken in taken_slots):
-                        found = True
-                        break
-                    current_guess -= timedelta(minutes=30)
-            
-            row['Lunch Time'] = current_guess.strftime("%I:%M %p") if found else "No Slot Avail"
-            if found: taken_slots.append(current_guess)
+                curr = target - timedelta(minutes=30)
+                while curr >= early:
+                    if not any(abs((curr - t).total_seconds()) < 1800 for t in taken_slots):
+                        found = True; break
+                    curr -= timedelta(minutes=30)
+            row['Lunch Time'] = curr.strftime("%I:%M %p") if found else "No Slot Avail"
+            if found: taken_slots.append(curr)
             final_records.append(row.to_dict())
-            
-    exclude_group = df[df['Role'] == "Exclude"].to_dict('records')
-    for item in exclude_group:
+    ex_group = df[df['Role'] == "Exclude"].to_dict('records')
+    for item in ex_group:
         item['Lunch Time'] = "N/A"
         final_records.append(item)
     return pd.DataFrame(final_records)
 
 def process_pdf(file, associate_input, exclude_input):
-    data, mismatched_names = [], []
-    time_regex = r"(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*-\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))"
-    valid_names = [name.strip().lower() for name in associate_input.split('\n') if name.strip()]
-    auto_exclude_names = [name.strip().lower() for name in exclude_input.split('\n') if name.strip()]
-    
+    data, mismatches = [], []
+    t_regex = r"(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*-\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))"
+    v_names = [n.strip().lower() for n in associate_input.split('\n') if n.strip()]
+    e_names = [n.strip().lower() for n in exclude_input.split('\n') if n.strip()]
     with pdfplumber.open(file) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
             if not text: continue
             for line in text.split('\n'):
-                clean = line.strip()
-                match_time = re.search(time_regex, clean, re.IGNORECASE)
-                if match_time:
-                    if any(ex in clean.lower() for ex in auto_exclude_names): continue
+                m = re.search(t_regex, line.strip(), re.IGNORECASE)
+                if m:
+                    if any(ex in line.lower() for ex in e_names): continue
                     match_name = None
-                    for name_key in valid_names:
-                        if name_key in clean.lower():
+                    for name_key in v_names:
+                        if name_key in line.lower():
                             parts = name_key.title().split()
                             match_name = f"{parts[0]} {parts[1][0]}.".strip() if len(parts) > 1 else parts[0]
                             break 
                     if match_name:
-                        st_dt, en_dt = parse_time(match_time.group(1)), parse_time(match_time.group(2))
+                        st_dt, en_dt = parse_time(m.group(1)), parse_time(m.group(2))
                         if st_dt and en_dt:
-                            end_dt_real = en_dt + timedelta(days=1) if en_dt < st_dt else en_dt
-                            data.append({
-                                "Associate": match_name, "Role": "Pickers", 
-                                "Shift": f"{match_time.group(1)} - {match_time.group(2)}",
-                                "Lunch Time": "Pending...", "StartDt": st_dt, "EndDt": end_dt_real, 
-                                "Duration": (end_dt_real - st_dt).total_seconds() / 3600
-                            })
+                            real_end = en_dt + timedelta(days=1) if en_dt < st_dt else en_dt
+                            data.append({"Associate": match_name, "Role": "Pickers", "Shift": f"{m.group(1)} - {m.group(2)}", "Lunch Time": "Pending...", "StartDt": st_dt, "EndDt": real_end, "Duration": (real_end - st_dt).total_seconds() / 3600})
                     else:
-                        potential = clean.split('-')[0].split('am')[0].split('pm')[0].strip()
-                        if len(potential) > 3: mismatched_names.append(potential)
-    return pd.DataFrame(data), list(set(mismatched_names))
+                        pot = line.split('-')[0].split('am')[0].split('pm')[0].strip()
+                        if len(pot) > 3: mismatches.append(pot)
+    return pd.DataFrame(data), list(set(mismatches))
 
-# --- Updated Sidebar Management ---
+# --- Sidebar ---
 st.sidebar.header("☁️ Database Management")
 
-# 1. Display Sync Status at the TOP
 if 'last_sync' not in st.session_state:
-    # Try an immediate sync on first load
-    current_r, current_e = load_lists_from_sheets()
-    st.session_state.r_val, st.session_state.e_val = current_r, current_e
-else:
-    current_r, current_e = st.session_state.r_val, st.session_state.e_val
+    r_val, e_val = load_lists_from_sheets()
+    st.session_state.r_val, st.session_state.e_val = r_val, e_val
 
-# Status Row
-col_sync1, col_sync2 = st.sidebar.columns([3, 1])
+# Status Header
 sync_time = st.session_state.get('last_sync', 'Never')
-col_sync1.write(f"**Last Sync:** {sync_time}")
-if col_sync2.button("🔄"):
-    current_r, current_e = load_lists_from_sheets()
-    st.session_state.r_val, st.session_state.e_val = current_r, current_e
+col1, col2 = st.sidebar.columns([3, 1])
+col1.write(f"**Last Sync:** {sync_time}")
+if col2.button("🔄"):
+    r, e = load_lists_from_sheets()
+    st.session_state.r_val, st.session_state.e_val = r, e
     st.rerun()
 
-st.sidebar.divider()
+assoc_input = st.sidebar.text_area("Whitelist", value=st.session_state.r_val, height=200)
+excl_input = st.sidebar.text_area("Blacklist", value=st.session_state.e_val, height=150)
 
-# 2. Input Areas
-assoc_input = st.sidebar.text_area("Associate Names (Whitelist):", value=current_r, height=250)
-excl_input = st.sidebar.text_area("Auto-Exclude List (Blacklist):", value=current_e, height=200)
-
-if st.sidebar.button("💾 SAVE PERMANENTLY TO SHEETS", use_container_width=True):
+if st.sidebar.button("💾 SAVE PERMANENTLY", use_container_width=True):
     save_lists_to_sheets(assoc_input, excl_input)
     st.session_state.r_val, st.session_state.e_val = assoc_input, excl_input
-    st.rerun()
 
 # --- Main UI ---
 st.title("📅 OPD Hourly Pickers/Dispensers")
@@ -177,13 +151,9 @@ if uploaded_file:
         new_df, mismatches = process_pdf(uploaded_file, assoc_input, excl_input)
         st.session_state.main_df, st.session_state.mismatches, st.session_state.calculated = new_df, mismatches, False
 
-    if st.session_state.get('mismatches'):
-        with st.expander("⚠️ Found shifts for names NOT on either list"):
-            st.code("\n".join(st.session_state.mismatches))
-
     df = st.session_state.main_df
-
-    # 1. Metrics
+    
+    # Metrics
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("🛒 Pickers", len(df[df['Role'] == 'Pickers']))
     m2.metric("📦 Backroom", len(df[df['Role'] == 'Backroom']))
@@ -192,95 +162,67 @@ if uploaded_file:
 
     st.divider()
 
-    # 2. Controls
-    c_col1, c_col2 = st.columns([2, 1])
-    with c_col1:
+    # Controls
+    c1, c2 = st.columns([2, 1])
+    with c1:
         st.subheader("Bulk Role Assignment")
         s1, s2, s3 = st.columns([2, 1, 1])
-        selected = s1.multiselect("Select Associates:", options=sorted(df['Associate'].tolist()))
-        target = s2.selectbox("Set Role:", ["Pickers", "Backroom", "Exceptions", "Exclude"])
+        selected = s1.multiselect("Select:", options=sorted(df['Associate'].tolist()))
+        target = s2.selectbox("Role:", ["Pickers", "Backroom", "Exceptions", "Exclude"])
         if s3.button("🚀 Apply"):
             st.session_state.main_df.loc[st.session_state.main_df['Associate'].isin(selected), 'Role'] = target
             st.rerun()
-    with c_col2:
+    with c2:
         st.subheader("Finalize")
         if st.button("🔥 GENERATE TABLES", type="primary", use_container_width=True):
             st.session_state.main_df = calculate_staggered_lunches(st.session_state.main_df)
             st.session_state.calculated = True
             st.rerun()
 
-    # 3. Master Editor
+    # Editor
     st.subheader("Master Daily Roster")
-    full_time_list = []
-    base_t = datetime(2025, 1, 1, 0, 0)
-    for i in range(48):
-        full_time_list.append((base_t + timedelta(minutes=30*i)).strftime("%I:%M %p"))
-    all_possible_options = ["N/A", "No Slot Avail", "Pending..."] + full_time_list
-
-    styled_master = st.session_state.main_df.style.applymap(highlight_no_slots, subset=['Lunch Time'])
-
-    edited_df = st.data_editor(styled_master, column_config={
-        "Associate": st.column_config.TextColumn("Associate", disabled=True),
-        "Role": st.column_config.SelectboxColumn("Role", options=["Pickers", "Backroom", "Exceptions", "Exclude"], required=True),
-        "Shift": st.column_config.TextColumn("Shift", disabled=True),
-        "Lunch Time": st.column_config.SelectboxColumn("Lunch Time", options=all_possible_options, required=False),
+    full_times = ["N/A", "No Slot Avail", "Pending..."] + [(datetime(2025,1,1,0,0)+timedelta(minutes=30*i)).strftime("%I:%M %p") for i in range(48)]
+    edited_df = st.data_editor(st.session_state.main_df.style.applymap(highlight_no_slots, subset=['Lunch Time']), column_config={
+        "Associate": st.column_config.TextColumn(disabled=True),
+        "Role": st.column_config.SelectboxColumn(options=["Pickers", "Backroom", "Exceptions", "Exclude"]),
+        "Shift": st.column_config.TextColumn(disabled=True),
+        "Lunch Time": st.column_config.SelectboxColumn(options=full_times),
         "StartDt": None, "EndDt": None, "Duration": None
     }, use_container_width=True, hide_index=True)
-    
-    if not edited_df.equals(st.session_state.main_df):
-        st.session_state.main_df = edited_df
-        st.rerun()
+    st.session_state.main_df = edited_df
 
-    # 4. Final Output
     if st.session_state.get('calculated'):
         st.divider()
-        st.header("📊 Hourly Count (4 AM - 10 PM)")
         h_tabs = st.tabs(["🛒 Pickers Count", "📦 Backroom Count", "⚠️ Exceptions Count"])
-        
-        def get_h_df(tab_role, label=None, mult=None):
-            rows = []
-            for h in range(4, 23):
-                lbl = f"{h if h<=12 else h-12} {'AM' if h<12 else 'PM'}"; lbl = "12 PM" if h==12 else lbl
-                count = 0
-                for _, r in st.session_state.main_df.iterrows():
-                    s_min, e_min = r['StartDt'].hour*60+r['StartDt'].minute, r['EndDt'].hour*60+r['EndDt'].minute
-                    if s_min <= h*60 and e_min >= (h+1)*60:
-                        on_l = False
-                        if r['Lunch Time'] not in ["N/A", "Pending...", "No Slot Avail"]:
-                            l_dt = parse_time(r['Lunch Time'])
-                            if l_dt:
-                                l_s = l_dt.hour*60+l_dt.minute; l_e = l_s+60
-                                if l_s < (h+1)*60 and l_e > h*60: on_l = True
-                        if not on_l:
-                            current_role = r['Role']
-                            active_role = "Pickers" if (h == 4 and current_role == "Backroom") else current_role
-                            if active_role == tab_role: count += 1
-                row = {"Hour": lbl, "Count": str(count)}
-                if label: row[label] = str(count * mult)
-                rows.append(row)
-            return pd.DataFrame(rows)
-
-        base_cfg = {"Hour": st.column_config.TextColumn("Hour"), "Count": st.column_config.TextColumn("Count")}
-        with h_tabs[0]: st.dataframe(get_h_df("Pickers", "Able to Pick", 75), use_container_width=True, hide_index=True, column_config={**base_cfg, "Able to Pick": st.column_config.TextColumn("Able to Pick")})
-        with h_tabs[1]: st.dataframe(get_h_df("Backroom", "Able to Dispense", 5), use_container_width=True, hide_index=True, column_config={**base_cfg, "Able to Dispense": st.column_config.TextColumn("Able to Dispense")})
-        with h_tabs[2]: st.dataframe(get_h_df("Exceptions"), use_container_width=True, hide_index=True, column_config=base_cfg)
+        for i, r_name in enumerate(["Pickers", "Backroom", "Exceptions"]):
+            with h_tabs[i]:
+                rows = []
+                for h in range(4, 23):
+                    lbl = f"{h if h<=12 else h-12} {'AM' if h<12 else 'PM'}"; lbl = "12 PM" if h==12 else lbl
+                    count = 0
+                    for _, r in st.session_state.main_df.iterrows():
+                        s_m, e_m = r['StartDt'].hour*60+r['StartDt'].minute, r['EndDt'].hour*60+r['EndDt'].minute
+                        if s_m <= h*60 and e_m >= (h+1)*60:
+                            on_l = False
+                            if r['Lunch Time'] not in ["N/A", "Pending...", "No Slot Avail"]:
+                                l_dt = parse_time(r['Lunch Time'])
+                                if l_dt and (l_dt.hour*60 < (h+1)*60 and (l_dt.hour*60+60) > h*60): on_l = True
+                            if not on_l:
+                                act = "Pickers" if (h==4 and r['Role']=="Backroom") else r['Role']
+                                if act == r_name: count += 1
+                    row = {"Hour": lbl, "Count": str(count)}
+                    if r_name == "Pickers": row["Able to Pick"] = str(count * 75)
+                    if r_name == "Backroom": row["Able to Dispense"] = str(count * 5)
+                    rows.append(row)
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
         st.divider()
         st.header("📋 Associates Lunches")
         l_tabs = st.tabs(["🛒 Pickers", "📦 Backroom", "⚠️ Exceptions"])
         for i, r_name in enumerate(["Pickers", "Backroom", "Exceptions"]):
             with l_tabs[i]:
-                display_df = st.session_state.main_df[st.session_state.main_df['Role']==r_name][["Associate", "Shift", "Lunch Time", "StartDt"]].sort_values("StartDt")
-                st.dataframe(display_df[["Associate", "Shift", "Lunch Time"]].style.applymap(highlight_no_slots, subset=['Lunch Time']), use_container_width=True, hide_index=True)
+                l_df = st.session_state.main_df[st.session_state.main_df['Role']==r_name][["Associate", "Shift", "Lunch Time", "StartDt"]].sort_values("StartDt")
+                st.dataframe(l_df[["Associate", "Shift", "Lunch Time"]].style.applymap(highlight_no_slots, subset=['Lunch Time']), use_container_width=True, hide_index=True)
 
-        # Simple CSV Download
-        csv_data = st.session_state.main_df[["Associate", "Role", "Shift", "Lunch Time"]].to_csv(index=False).encode('utf-8')
-        st.sidebar.divider()
-        st.sidebar.download_button(
-            label="📥 DOWNLOAD DAILY ROSTER (CSV)", 
-            data=csv_data, 
-            file_name=f"OPD_Roster_{datetime.now().strftime('%Y-%m-%d')}.csv", 
-            mime="text/csv", 
-            use_container_width=True
-        )
-
+        csv = st.session_state.main_df[["Associate", "Role", "Shift", "Lunch Time"]].to_csv(index=False).encode('utf-8')
+        st.sidebar.download_button("📥 DOWNLOAD CSV", csv, f"OPD_{datetime.now().strftime('%Y-%m-%d')}.csv", "text/csv", use_container_width=True)
