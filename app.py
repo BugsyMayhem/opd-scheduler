@@ -54,25 +54,17 @@ def parse_time(time_str):
         except ValueError: continue
     return None
 
-# --- FIXED STYLING LOGIC ---
+# --- FIXED STYLING LOGIC (Red Text Only) ---
 def style_roster(df):
-    """Creates a styled dataframe. Checks for 'Role' column to prevent KeyErrors."""
+    """Creates a styled dataframe. Only applies red text to 'No Slot Avail'."""
     def apply_styles(row):
         styles = [''] * len(row)
         
-        # Color Associate Name based on Role (if Role column exists)
-        if 'Role' in row.index:
-            role = row['Role']
-            if role == "Pickers":
-                styles[row.index.get_loc('Associate')] = 'background-color: pink; color: black; font-weight: bold'
-            elif role == "Backroom":
-                styles[row.index.get_loc('Associate')] = 'background-color: lightblue; color: black; font-weight: bold'
-            elif role == "Exceptions":
-                styles[row.index.get_loc('Associate')] = 'background-color: yellow; color: black; font-weight: bold'
-            
         # Color Lunch Time alert
         if 'Lunch Time' in row.index and row['Lunch Time'] == "No Slot Avail":
-            styles[row.index.get_loc('Lunch Time')] = 'color: red; font-weight: bold'
+            # Find the index of the Lunch Time column and apply the style
+            lunch_idx = row.index.get_loc('Lunch Time')
+            styles[lunch_idx] = 'color: red; font-weight: bold'
             
         return styles
     return df.style.apply(apply_styles, axis=1)
@@ -182,9 +174,11 @@ if st.sidebar.button("💾 SAVE PERMANENTLY", use_container_width=True):
 # --- Main UI ---
 st.title("📅 OPD Hourly Pickers/Dispensers")
 
+# Initialize Session State immediately so UI components work
 if 'main_df' not in st.session_state:
     st.session_state.main_df = pd.DataFrame(columns=["Associate", "Role", "Shift", "Lunch Time", "StartDt", "EndDt", "Duration"])
 
+# 1. Manual Entry Section (ALWAYS VISIBLE)
 with st.expander("➕ Manually Add Associate"):
     ma1, ma2, ma3, ma4 = st.columns([2, 1, 1, 1])
     whitelist = sorted([n.strip() for n in assoc_input.split('\n') if n.strip()])
@@ -202,6 +196,7 @@ with st.expander("➕ Manually Add Associate"):
             dur = (r_e - s_dt).total_seconds() / 3600
         except: s_dt, r_e, dur = None, None, 0
         
+        # Minor Icon detection
         disp_name = new_a
         if "(m)" in new_a.lower() or "minor" in new_a.lower():
             p = new_a.replace("(m)", "").replace("minor", "").strip().title().split()
@@ -216,6 +211,7 @@ with st.expander("➕ Manually Add Associate"):
 
 st.divider()
 
+# 2. File Upload
 uploaded_file = st.file_uploader("Upload Roster PDF", type="pdf")
 if uploaded_file and st.button("📂 Load PDF into Roster"):
     new_df, mismatches = process_pdf(uploaded_file, assoc_input, excl_input)
@@ -223,6 +219,7 @@ if uploaded_file and st.button("📂 Load PDF into Roster"):
     st.session_state.mismatches = mismatches
     st.rerun()
 
+# 3. Display Data & Tools
 df = st.session_state.main_df
 if not df.empty:
     m1, m2, m3, m4 = st.columns(4)
@@ -233,6 +230,7 @@ if not df.empty:
 
     st.divider()
 
+    # Bulk Tools & Deletion
     c1, c2 = st.columns([2, 1])
     with c1:
         st.subheader("Bulk Actions")
@@ -254,10 +252,11 @@ if not df.empty:
             st.session_state.calculated = True
             st.rerun()
 
+    # Master Table Editor
     st.subheader("Master Daily Roster")
     st.session_state.main_df = add_role_icons(st.session_state.main_df)
     
-    # MASTER VIEW Styling
+    # MASTER VIEW Styling (Red Text Only)
     styled_master = style_roster(st.session_state.main_df)
 
     edited_df = st.data_editor(styled_master, column_config={
@@ -272,6 +271,7 @@ if not df.empty:
         st.session_state.main_df = edited_df
         st.rerun()
 
+# 4. Hourly & Lunch Output
 if st.session_state.get('calculated'):
     st.divider()
     h_tabs = st.tabs(["🛒 Pickers Count", "📦 Backroom Count", "⚠️ Exceptions Count"])
@@ -309,10 +309,4 @@ if st.session_state.get('calculated'):
             # Show the table but hide 'Role' and 'StartDt' from the user
             st.dataframe(
                 style_roster(ldf), 
-                column_config={"Role": None, "StartDt": None},
-                use_container_width=True, 
-                hide_index=True
-            )
-
-    csv = st.session_state.main_df[["Associate", "Role", "Shift", "Lunch Time"]].to_csv(index=False).encode('utf-8')
-    st.sidebar.download_button("📥 DOWNLOAD CSV", csv, f"OPD_{datetime.now().strftime('%Y-%m-%d')}.csv", "text/csv", use_container_width=True)
+                column_config={"Role": None, "
