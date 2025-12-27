@@ -74,6 +74,7 @@ def calculate_staggered_lunches(df):
     if df.empty: return df
     final_records = []
     active_roles = ["Pickers", "Backroom", "Exceptions"]
+    
     for role in active_roles:
         role_group = df[df['Role'] == role].sort_values(by='StartDt').copy()
         taken_slots = []
@@ -82,22 +83,31 @@ def calculate_staggered_lunches(df):
                 row['Lunch Time'] = "N/A"
                 final_records.append(row.to_dict())
                 continue
-            target, early, late = row['StartDt'] + timedelta(hours=4), row['StartDt'] + timedelta(hours=3), row['StartDt'] + timedelta(hours=5)
-            safe_limit = min(late, row['EndDt'] - timedelta(hours=1))
+            
+            # Standard rules for everyone (including Minors)
+            target = row['StartDt'] + timedelta(hours=4)
+            earliest = row['StartDt'] + timedelta(hours=3)
+            latest = row['StartDt'] + timedelta(hours=5)
+            safe_limit = min(latest, row['EndDt'] - timedelta(hours=1))
+            
             curr, found = target, False
             while curr <= safe_limit:
                 if not any(abs((curr - t).total_seconds()) < 1800 for t in taken_slots):
                     found = True; break
                 curr += timedelta(minutes=30)
+            
             if not found:
                 curr = target - timedelta(minutes=30)
-                while curr >= early:
+                while curr >= earliest:
                     if not any(abs((curr - t).total_seconds()) < 1800 for t in taken_slots):
                         found = True; break
                     curr -= timedelta(minutes=30)
+            
             row['Lunch Time'] = curr.strftime("%I:%M %p") if found else "No Slot Avail"
             if found: taken_slots.append(curr)
             final_records.append(row.to_dict())
+            
+    # Add Excluded back in
     ex_group = df[df['Role'] == "Exclude"].to_dict('records')
     for item in ex_group:
         item['Lunch Time'] = "N/A"
@@ -109,6 +119,7 @@ def process_pdf(file, associate_input, exclude_input):
     t_regex = r"(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*-\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))"
     v_names = [n.strip().lower() for n in associate_input.split('\n') if n.strip()]
     e_names = [n.strip().lower() for n in exclude_input.split('\n') if n.strip()]
+    
     with pdfplumber.open(file) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
@@ -118,16 +129,37 @@ def process_pdf(file, associate_input, exclude_input):
                 if m:
                     if any(ex in line.lower() for ex in e_names): continue
                     match_name = None
+                    is_minor = False
                     for name_key in v_names:
-                        if name_key in line.lower():
-                            parts = name_key.title().split()
+                        # Clean the key to find the name in the PDF
+                        clean_key = name_key.replace("(m)", "").replace("minor", "").strip()
+                        if clean_key in line.lower():
+                            # Check if your database entry has the minor tag
+                            if "(m)" in name_key or "minor" in name_key:
+                                is_minor = True
+                            
+                            parts = clean_key.title().split()
+                            # Format name as "First L."
                             match_name = f"{parts[0]} {parts[1][0]}.".strip() if len(parts) > 1 else parts[0]
+                            
+                            # Add the icon if they are a minor
+                            if is_minor:
+                                match_name = f"👶 {match_name}"
                             break 
+                    
                     if match_name:
                         st_dt, en_dt = parse_time(m.group(1)), parse_time(m.group(2))
                         if st_dt and en_dt:
                             real_end = en_dt + timedelta(days=1) if en_dt < st_dt else en_dt
-                            data.append({"Associate": match_name, "Role": "Pickers", "Shift": f"{m.group(1)} - {m.group(2)}", "Lunch Time": "Pending...", "StartDt": st_dt, "EndDt": real_end, "Duration": (real_end - st_dt).total_seconds() / 3600})
+                            data.append({
+                                "Associate": match_name, 
+                                "Role": "Pickers", 
+                                "Shift": f"{m.group(1)} - {m.group(2)}", 
+                                "Lunch Time": "Pending...", 
+                                "StartDt": st_dt, 
+                                "EndDt": real_end, 
+                                "Duration": (real_end - st_dt).total_seconds() / 3600
+                            })
                     else:
                         pot = line.split('-')[0].split('am')[0].split('pm')[0].strip()
                         if len(pot) > 3: mismatches.append(pot)
@@ -240,5 +272,6 @@ if uploaded_file:
 
         csv = st.session_state.main_df[["Associate", "Role", "Shift", "Lunch Time"]].to_csv(index=False).encode('utf-8')
         st.sidebar.download_button("📥 DOWNLOAD CSV", csv, f"OPD_{datetime.now().strftime('%Y-%m-%d')}.csv", "text/csv", use_container_width=True)
+
 
 
