@@ -14,6 +14,7 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 # --- Helper Functions ---
 def get_local_time():
+    """Adjusts UTC to Central Time based on date."""
     now_utc = datetime.utcnow()
     year = now_utc.year
     dst_start = datetime(year, 3, 8) + timedelta(days=(6 - datetime(year, 3, 8).weekday()) % 7)
@@ -45,6 +46,14 @@ def save_lists_to_sheets(roster_text, exclude_text):
         st.sidebar.success(f"✅ Saved at {st.session_state.last_sync}")
     except Exception as e:
         st.sidebar.error(f"Failed to save: {e}")
+
+def save_history():
+    """Saves a snapshot of the current main_df to the history stack."""
+    if "history" not in st.session_state:
+        st.session_state.history = []
+    st.session_state.history.append(st.session_state.main_df.copy())
+    if len(st.session_state.history) > 10:
+        st.session_state.history.pop(0)
 
 def parse_time(time_str):
     if not time_str: return None
@@ -146,11 +155,13 @@ if st.sidebar.button("💾 SAVE PERMANENTLY", use_container_width=True):
 # --- Main UI ---
 st.title("📅 OPD Hourly Pickers/Dispensers")
 
-# Initialize Session State immediately so UI components work
+# Initialize Session States
 if 'main_df' not in st.session_state:
     st.session_state.main_df = pd.DataFrame(columns=["Associate", "Role", "Shift", "Lunch Time", "StartDt", "EndDt", "Duration"])
+if 'history' not in st.session_state:
+    st.session_state.history = []
 
-# 1. Manual Entry Section (ALWAYS VISIBLE)
+# 1. Manual Entry Section
 with st.expander("➕ Manually Add Associate"):
     ma1, ma2, ma3, ma4 = st.columns([2, 1, 1, 1])
     whitelist = sorted([n.strip() for n in assoc_input.split('\n') if n.strip()])
@@ -161,6 +172,7 @@ with st.expander("➕ Manually Add Associate"):
     new_l = ma4.selectbox("Lunch", options=l_opts)
     
     if st.button("➕ Add to Roster", use_container_width=True):
+        save_history()
         try:
             ts = new_s.lower().replace(" ", "").split('-')
             s_dt, e_dt = parse_time(ts[0]), parse_time(ts[1])
@@ -168,7 +180,6 @@ with st.expander("➕ Manually Add Associate"):
             dur = (r_e - s_dt).total_seconds() / 3600
         except: s_dt, r_e, dur = None, None, 0
         
-        # Minor Icon detection
         disp_name = new_a
         if "(m)" in new_a.lower() or "minor" in new_a.lower():
             p = new_a.replace("(m)", "").replace("minor", "").strip().title().split()
@@ -184,14 +195,16 @@ with st.expander("➕ Manually Add Associate"):
 st.divider()
 
 # 2. File Upload
-uploaded_file = st.file_uploader("Upload Roster PDF", type="pdf")
-if uploaded_file and st.button("📂 Load PDF into Roster"):
+col_u1, col_u2 = st.columns([3, 1])
+uploaded_file = col_u1.file_uploader("Upload Roster PDF", type="pdf")
+if uploaded_file and col_u2.button("📂 Load PDF into Roster", use_container_width=True):
+    save_history()
     new_df, mismatches = process_pdf(uploaded_file, assoc_input, excl_input)
     st.session_state.main_df = pd.concat([st.session_state.main_df, new_df], ignore_index=True)
     st.session_state.mismatches = mismatches
     st.rerun()
 
-# 3. Display Data & Tools
+# 3. Main Logic & Display
 df = st.session_state.main_df
 if not df.empty:
     m1, m2, m3, m4 = st.columns(4)
@@ -202,22 +215,36 @@ if not df.empty:
 
     st.divider()
 
-    # Bulk Tools & Deletion
+    # Bulk Tools, Undo, Clear
     c1, c2 = st.columns([2, 1])
     with c1:
-        st.subheader("Bulk Actions")
+        st.subheader("Roster Management")
+        t_col1, t_col2 = st.columns(2)
+        if st.session_state.history:
+            if t_col1.button("↩️ Undo Last Action", use_container_width=True):
+                st.session_state.main_df = st.session_state.history.pop()
+                st.rerun()
+        if t_col2.button("🗑️ Clear Entire Roster", type="secondary", use_container_width=True):
+            save_history()
+            st.session_state.main_df = pd.DataFrame(columns=["Associate", "Role", "Shift", "Lunch Time", "StartDt", "EndDt", "Duration"])
+            st.rerun()
+
+        st.write("---")
         s1, s2, s3, s4 = st.columns([2, 1, 1, 1])
         selected = s1.multiselect("Select People:", options=df['Associate'].tolist())
         target = s2.selectbox("Assign Role:", ["Pickers", "Backroom", "Exceptions", "Exclude"])
         if s3.button("🚀 Apply"):
+            save_history()
             st.session_state.main_df.loc[st.session_state.main_df['Associate'].isin(selected), 'Role'] = target
             st.rerun()
-        if s4.button("🗑️ Delete"):
+        if s4.button("❌ Delete"):
+            save_history()
             st.session_state.main_df = st.session_state.main_df[~st.session_state.main_df['Associate'].isin(selected)]
             st.rerun()
     with c2:
         st.subheader("Finalize")
         if st.button("🔥 GENERATE LUNCHES", type="primary", use_container_width=True):
+            save_history()
             st.session_state.main_df = calculate_staggered_lunches(st.session_state.main_df)
             st.session_state.calculated = True
             st.rerun()
@@ -236,7 +263,7 @@ if not df.empty:
         st.session_state.main_df = edited_df
         st.rerun()
 
-# 4. Hourly & Lunch Output
+# 4. Hourly & Lunch Tabs
 if st.session_state.get('calculated'):
     st.divider()
     h_tabs = st.tabs(["🛒 Pickers Count", "📦 Backroom Count", "⚠️ Exceptions Count"])
