@@ -131,22 +131,30 @@ def process_pdf(file, associate_input, exclude_input):
             for line in text.split('\n'):
                 m = re.search(t_regex, line.strip(), re.IGNORECASE)
                 if m:
+                    # Check if name is in blacklist
                     if any(ex in line.lower() for ex in e_names): continue
-                    match_name = None
+                    
+                    match_entry = None
                     for entry in v_list:
                         if entry["search"] in line.lower():
-                            parts = entry["search"].title().split()
-                            fmt = f"{parts[0]} {parts[1][0]}.".strip() if len(parts) > 1 else parts[0]
-                            match_name = f"👶 {fmt}" if entry["is_minor"] else fmt
+                            match_entry = entry
                             break 
-                    if match_name:
+                    
+                    if match_entry:
                         st_dt, en_dt = parse_time(m.group(1)), parse_time(m.group(2))
                         if st_dt and en_dt:
                             real_end = en_dt + timedelta(days=1) if en_dt < st_dt else en_dt
+                            parts = match_entry["search"].title().split()
+                            fmt = f"{parts[0]} {parts[1][0]}.".strip() if len(parts) > 1 else parts[0]
+                            match_name = f"👶 {fmt}" if match_entry["is_minor"] else fmt
                             data.append({"Associate": match_name, "Role": "Pickers", "Shift": f"{m.group(1)} - {m.group(2)}", "Lunch Time": "Pending...", "StartDt": st_dt, "EndDt": real_end, "Duration": (real_end - st_dt).total_seconds() / 3600})
                     else:
-                        pot = line.split('-')[0].split('am')[0].split('pm')[0].strip()
-                        if len(pot) > 3: mismatches.append(pot)
+                        # Logic to capture potential unknown names (mismatches)
+                        # We take the text before the time stamp
+                        pot = line.split(m.group(1))[0].strip()
+                        if len(pot) > 2: # Ignore noise like "1" or "P"
+                            mismatches.append(pot)
+                            
     return pd.DataFrame(data), list(set(mismatches))
 
 # --- Sidebar ---
@@ -213,6 +221,15 @@ if uploaded_file and st.button("📂 Load PDF into Roster"):
     st.session_state.mismatches = mismatches
     st.rerun()
 
+# --- NEW: MISMATCH WARNING SECTION ---
+if st.session_state.get('mismatches'):
+    with st.expander("⚠️ Review Missing Names (Not in Lists)", expanded=True):
+        st.info("The following names were found in the PDF but are NOT in your Whitelist or Blacklist. Add them to the sidebar if they belong to OPD.")
+        st.write(", ".join(st.session_state.mismatches))
+        if st.button("Clear Mismatch List"):
+            st.session_state.mismatches = []
+            st.rerun()
+
 df = st.session_state.main_df
 if not df.empty:
     m1, m2, m3, m4 = st.columns(4)
@@ -272,13 +289,9 @@ if st.session_state.get('calculated'):
                 count = 0
                 for _, r in st.session_state.main_df.iterrows():
                     if r['StartDt'] is None: continue
-                    
-                    # Core Shift Presence check
                     sm, em = r['StartDt'].hour*60+r['StartDt'].minute, r['EndDt'].hour*60+r['EndDt'].minute
                     if sm <= h*60 and em >= (h+1)*60:
                         on_l = False
-                        
-                        # UPDATED LUNCH DEDUCTION LOGIC
                         if r['Lunch Time'] not in ["N/A", "Pending...", "No Slot Avail"]:
                             ld = parse_time(r['Lunch Time'])
                             if ld:
@@ -286,11 +299,8 @@ if st.session_state.get('calculated'):
                                 l_end_min = l_start_min + 60
                                 h_start_min = h * 60
                                 h_end_min = (h + 1) * 60
-                                
-                                # If the lunch overlaps with the hour block at all
                                 if l_start_min < h_end_min and l_end_min > h_start_min:
                                     on_l = True
-                                    
                         if not on_l:
                             act = "Pickers" if (h==4 and r['Role']=="Backroom") else r['Role']
                             if act == r_name: count += 1
