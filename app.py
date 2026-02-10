@@ -88,25 +88,40 @@ def calculate_staggered_lunches(df):
         role_group = df[df['Role'] == role].sort_values(by='StartDt').copy()
         taken_slots = []
         for _, row in role_group.iterrows():
-            # UPDATED RULE: Shifts less than 6 hours get N/A. Exactly 6 hours now get assigned.
             if row['Duration'] < 6:
                 row['Lunch Time'] = "N/A"; final_records.append(row.to_dict()); continue
-            target, early, late = row['StartDt'] + timedelta(hours=4), row['StartDt'] + timedelta(hours=3), row['StartDt'] + timedelta(hours=5)
-            safe_limit = min(late, row['EndDt'] - timedelta(hours=1))
+            
+            # Lunch target is 4 hours in. Range is 3 to 5 hours.
+            target = row['StartDt'] + timedelta(hours=4)
+            early = row['StartDt'] + timedelta(hours=3)
+            late = row['StartDt'] + timedelta(hours=5)
+            
+            # RULE: Lunch MUST end at least 1 hour before shift end. 
+            # Since lunch is 1 hour long, the lunch START must be at least 2 hours before Shift End.
+            latest_start_allowed = row['EndDt'] - timedelta(hours=2)
+            safe_limit = min(late, latest_start_allowed)
+            
             curr, found = target, False
+            
+            # 1. Try Target and search forward
             while curr <= safe_limit:
                 if not any(abs((curr - t).total_seconds()) < 1800 for t in taken_slots):
                     found = True; break
                 curr += timedelta(minutes=30)
+            
+            # 2. If not found, search backward from Target
             if not found:
                 curr = target - timedelta(minutes=30)
                 while curr >= early:
-                    if not any(abs((curr - t).total_seconds()) < 1800 for t in taken_slots):
-                        found = True; break
+                    if curr <= latest_start_allowed: # Ensure backward search doesn't violate safety either
+                        if not any(abs((curr - t).total_seconds()) < 1800 for t in taken_slots):
+                            found = True; break
                     curr -= timedelta(minutes=30)
+            
             row['Lunch Time'] = curr.strftime("%I:%M %p") if found else "No Slot Avail"
             if found: taken_slots.append(curr)
             final_records.append(row.to_dict())
+            
     ex_group = df[df['Role'] == "Exclude"].to_dict('records')
     for item in ex_group:
         item['Lunch Time'] = "N/A"; final_records.append(item)
