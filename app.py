@@ -54,12 +54,10 @@ def parse_time(time_str):
         except ValueError: continue
     return None
 
-# --- CLEANED STYLING LOGIC (Backgrounds Removed) ---
+# --- CLEANED STYLING LOGIC ---
 def style_roster(df):
-    """Creates a styled dataframe. Applies NO background colors, only red text for alerts."""
     def apply_styles(row):
         styles = [''] * len(row)
-        # Bold red text ONLY for 'No Slot Avail' in the Lunch Time column
         if 'Lunch Time' in row.index and row['Lunch Time'] == "No Slot Avail":
             lunch_idx = row.index.get_loc('Lunch Time')
             styles[lunch_idx] = 'color: red; font-weight: bold'
@@ -90,7 +88,8 @@ def calculate_staggered_lunches(df):
         role_group = df[df['Role'] == role].sort_values(by='StartDt').copy()
         taken_slots = []
         for _, row in role_group.iterrows():
-            if row['Duration'] <= 6:
+            # UPDATED RULE: Shifts less than 6 hours get N/A. Exactly 6 hours now get assigned.
+            if row['Duration'] < 6:
                 row['Lunch Time'] = "N/A"; final_records.append(row.to_dict()); continue
             target, early, late = row['StartDt'] + timedelta(hours=4), row['StartDt'] + timedelta(hours=3), row['StartDt'] + timedelta(hours=5)
             safe_limit = min(late, row['EndDt'] - timedelta(hours=1))
@@ -235,6 +234,7 @@ if not df.empty:
         if s4.button("🗑️ Delete"):
             st.session_state.main_df = st.session_state.main_df[~st.session_state.main_df['Associate'].isin(selected)]
             st.rerun()
+
     with c2:
         st.subheader("Finalize")
         if st.button("🔥 GENERATE LUNCHES", type="primary", use_container_width=True):
@@ -245,8 +245,6 @@ if not df.empty:
 
     st.subheader("Master Daily Roster")
     st.session_state.main_df = add_role_icons(st.session_state.main_df)
-    
-    # Styled Master View
     styled_master = style_roster(st.session_state.main_df)
 
     edited_df = st.data_editor(styled_master, column_config={
@@ -293,7 +291,6 @@ if st.session_state.get('calculated'):
     for i, r_name in enumerate(["Pickers", "Backroom", "Exceptions"]):
         with l_tabs[i]:
             ldf = st.session_state.main_df[st.session_state.main_df['Role']==r_name][["Associate", "Shift", "Lunch Time", "Role", "StartDt"]].sort_values("StartDt")
-            # Styling only bold red for these as well
             st.dataframe(
                 style_roster(ldf), 
                 column_config={"Role": None, "StartDt": None},
