@@ -131,15 +131,12 @@ def process_pdf(file, associate_input, exclude_input):
             for line in text.split('\n'):
                 m = re.search(t_regex, line.strip(), re.IGNORECASE)
                 if m:
-                    # Check if name is in blacklist
                     if any(ex in line.lower() for ex in e_names): continue
-                    
                     match_entry = None
                     for entry in v_list:
                         if entry["search"] in line.lower():
                             match_entry = entry
                             break 
-                    
                     if match_entry:
                         st_dt, en_dt = parse_time(m.group(1)), parse_time(m.group(2))
                         if st_dt and en_dt:
@@ -149,12 +146,8 @@ def process_pdf(file, associate_input, exclude_input):
                             match_name = f"👶 {fmt}" if match_entry["is_minor"] else fmt
                             data.append({"Associate": match_name, "Role": "Pickers", "Shift": f"{m.group(1)} - {m.group(2)}", "Lunch Time": "Pending...", "StartDt": st_dt, "EndDt": real_end, "Duration": (real_end - st_dt).total_seconds() / 3600})
                     else:
-                        # Logic to capture potential unknown names (mismatches)
-                        # We take the text before the time stamp
                         pot = line.split(m.group(1))[0].strip()
-                        if len(pot) > 2: # Ignore noise like "1" or "P"
-                            mismatches.append(pot)
-                            
+                        if len(pot) > 2: mismatches.append(pot)
     return pd.DataFrame(data), list(set(mismatches))
 
 # --- Sidebar ---
@@ -221,10 +214,9 @@ if uploaded_file and st.button("📂 Load PDF into Roster"):
     st.session_state.mismatches = mismatches
     st.rerun()
 
-# --- NEW: MISMATCH WARNING SECTION ---
 if st.session_state.get('mismatches'):
     with st.expander("⚠️ Review Missing Names (Not in Lists)", expanded=True):
-        st.info("The following names were found in the PDF but are NOT in your Whitelist or Blacklist. Add them to the sidebar if they belong to OPD.")
+        st.info("The following names were found in the PDF but are NOT in your Whitelist or Blacklist.")
         st.write(", ".join(st.session_state.mismatches))
         if st.button("Clear Mismatch List"):
             st.session_state.mismatches = []
@@ -302,7 +294,8 @@ if st.session_state.get('calculated'):
                                 if l_start_min < h_end_min and l_end_min > h_start_min:
                                     on_l = True
                         if not on_l:
-                            act = "Pickers" if (h==4 and r['Role']=="Backroom") else r['Role']
+                            # UPDATED RULE: Apply role reclassification for 4:00 AM and 5:00 AM
+                            act = "Pickers" if (h in [4, 5] and r['Role']=="Backroom") else r['Role']
                             if act == r_name: count += 1
                 row = {"Hour": lbl, "Count": str(count)}
                 if r_name == "Pickers": row["Able to Pick"] = str(count * 75)
