@@ -54,7 +54,6 @@ def parse_time(time_str):
         except ValueError: continue
     return None
 
-# --- CLEANED STYLING LOGIC ---
 def style_roster(df):
     def apply_styles(row):
         styles = [''] * len(row)
@@ -90,38 +89,26 @@ def calculate_staggered_lunches(df):
         for _, row in role_group.iterrows():
             if row['Duration'] < 6:
                 row['Lunch Time'] = "N/A"; final_records.append(row.to_dict()); continue
-            
-            # Lunch target is 4 hours in. Range is 3 to 5 hours.
             target = row['StartDt'] + timedelta(hours=4)
             early = row['StartDt'] + timedelta(hours=3)
             late = row['StartDt'] + timedelta(hours=5)
-            
-            # RULE: Lunch MUST end at least 1 hour before shift end. 
-            # Since lunch is 1 hour long, the lunch START must be at least 2 hours before Shift End.
             latest_start_allowed = row['EndDt'] - timedelta(hours=2)
             safe_limit = min(late, latest_start_allowed)
-            
             curr, found = target, False
-            
-            # 1. Try Target and search forward
             while curr <= safe_limit:
                 if not any(abs((curr - t).total_seconds()) < 1800 for t in taken_slots):
                     found = True; break
                 curr += timedelta(minutes=30)
-            
-            # 2. If not found, search backward from Target
             if not found:
                 curr = target - timedelta(minutes=30)
                 while curr >= early:
-                    if curr <= latest_start_allowed: # Ensure backward search doesn't violate safety either
+                    if curr <= latest_start_allowed:
                         if not any(abs((curr - t).total_seconds()) < 1800 for t in taken_slots):
                             found = True; break
                     curr -= timedelta(minutes=30)
-            
             row['Lunch Time'] = curr.strftime("%I:%M %p") if found else "No Slot Avail"
             if found: taken_slots.append(curr)
             final_records.append(row.to_dict())
-            
     ex_group = df[df['Role'] == "Exclude"].to_dict('records')
     for item in ex_group:
         item['Lunch Time'] = "N/A"; final_records.append(item)
@@ -285,12 +272,25 @@ if st.session_state.get('calculated'):
                 count = 0
                 for _, r in st.session_state.main_df.iterrows():
                     if r['StartDt'] is None: continue
+                    
+                    # Core Shift Presence check
                     sm, em = r['StartDt'].hour*60+r['StartDt'].minute, r['EndDt'].hour*60+r['EndDt'].minute
                     if sm <= h*60 and em >= (h+1)*60:
                         on_l = False
+                        
+                        # UPDATED LUNCH DEDUCTION LOGIC
                         if r['Lunch Time'] not in ["N/A", "Pending...", "No Slot Avail"]:
                             ld = parse_time(r['Lunch Time'])
-                            if ld and (ld.hour*60 < (h+1)*60 and (ld.hour*60+60) > h*60): on_l = True
+                            if ld:
+                                l_start_min = ld.hour * 60 + ld.minute
+                                l_end_min = l_start_min + 60
+                                h_start_min = h * 60
+                                h_end_min = (h + 1) * 60
+                                
+                                # If the lunch overlaps with the hour block at all
+                                if l_start_min < h_end_min and l_end_min > h_start_min:
+                                    on_l = True
+                                    
                         if not on_l:
                             act = "Pickers" if (h==4 and r['Role']=="Backroom") else r['Role']
                             if act == r_name: count += 1
